@@ -1,0 +1,9 @@
+product_id,product_name,product_type,collab_name
+P001,コラボA キャラクターフィギュア,collab,IP_A
+P002,コラボB ぬいぐるみ,collab,IP_B
+P003,コラボA Tシャツ,collab,IP_A
+P010,自社IP キャラクターフィギュア,own_ip,
+P011,自社IP ぬいぐるみ,own_ip,
+P012,自社IP Tシャツ,own_ip,
+P020,コラボC アクリルスタンド,collab,IP_C
+P021,自社IP アクリルスタンド,own_ip,
