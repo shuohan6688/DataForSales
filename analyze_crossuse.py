@@ -47,11 +47,17 @@ def load_data(input_path: str) -> pd.DataFrame:
     p = Path(input_path)
     df = pd.read_excel(p) if p.suffix in (".xlsx", ".xls") else pd.read_csv(p)
     print(f"[読込] {len(df):,} 行  /  ユニーク注文ID数: {df[ORDER_ID_COL].nunique():,}")
-    print(f"[診断] sales列の合計（そのまま）         : {df[SALES_COL].sum():,.0f}")
-    print(f"[診断] sales×quantity の合計             : {(df[SALES_COL] * df[QTY_COL]).sum():,.0f}")
-    print(f"[診断] salesのサンプル（先頭5行）:")
-    print(df[[ORDER_ID_COL, QTY_COL, SALES_COL]].head().to_string())
-    print(f"[確認] Separate列の値: {df[TYPE_COL].value_counts().to_dict()}")
+    print(f"\n--- sales列の診断 ---")
+    print(f"  NaN件数    : {df[SALES_COL].isna().sum():,}")
+    print(f"  0件数      : {(df[SALES_COL] == 0).sum():,}")
+    print(f"  最小値     : {df[SALES_COL].min():,.0f}")
+    print(f"  中央値     : {df[SALES_COL].median():,.0f}")
+    print(f"  最大値     : {df[SALES_COL].max():,.0f}")
+    print(f"  合計（そのまま）   : {df[SALES_COL].sum():,.0f}")
+    print(f"  合計（×quantity）  : {(df[SALES_COL] * df[QTY_COL]).sum():,.0f}")
+    print(f"\n  sales列の値の分布（上位10種）:")
+    print(df[SALES_COL].value_counts().head(10).to_string())
+    print(f"\n[確認] Separate列の値: {df[TYPE_COL].value_counts().to_dict()}")
     return df
 
 
