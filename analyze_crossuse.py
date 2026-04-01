@@ -31,7 +31,8 @@ OUTPUT_FILE = "results/crossuse_analysis.xlsx"
 # ── 列名設定（実データの列名に合わせて変更） ──────────────
 ORDER_ID_COL = "order_id"
 TYPE_COL     = "Separate"    # 商品区分列
-SALES_COL    = "sales"       # 売上金額列
+SALES_COL    = "sales"       # 単価列
+QTY_COL      = "quantity"    # 数量列
 
 # ── Separate列の値 ───────────────────────────────────
 COLLAB_VALUE   = "他社IP"
@@ -57,9 +58,17 @@ def load_data(input_path: str) -> pd.DataFrame:
 # ────────────────────────────────────────────────
 def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     before = len(df)
+    raw_sales = (df[SALES_COL] * df[QTY_COL]).sum()
+    print(f"[確認] 除外前の売上合計（単価×数量）: {raw_sales:,.0f}")
+
     df = df[~df[TYPE_COL].isin(EXCLUDE_VALUES)].copy()
     excluded = before - len(df)
+
+    # 売上金額列を計算して追加
+    df["line_total"] = df[SALES_COL] * df[QTY_COL]
+    after_sales = df["line_total"].sum()
     print(f"[除外] shoppingbag: {excluded:,} 行 → 残り {len(df):,} 行")
+    print(f"[確認] 除外後の売上合計: {after_sales:,.0f}")
     return df
 
 
@@ -73,9 +82,10 @@ def classify_orders(df: pd.DataFrame) -> pd.DataFrame:
         "has_own_ip": grouped.apply(lambda t: (t == OWN_IP_VALUE).any()),
     }).reset_index()
 
-    # 注文ID単位の売上合計を結合
-    order_sales = df.groupby(ORDER_ID_COL)[SALES_COL].sum().reset_index()
+    # 注文ID単位の売上合計（単価×数量）を結合
+    order_sales = df.groupby(ORDER_ID_COL)["line_total"].sum().reset_index()
     order_flags = order_flags.merge(order_sales, on=ORDER_ID_COL, how="left")
+    order_flags.rename(columns={"line_total": SALES_COL}, inplace=True)
 
     def segment(row):
         if row["has_collab"] and row["has_own_ip"]:
