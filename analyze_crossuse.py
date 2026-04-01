@@ -31,6 +31,7 @@ OUTPUT_FILE = "results/crossuse_analysis.xlsx"
 # ── 列名設定（実データの列名に合わせて変更） ──────────────
 ORDER_ID_COL = "order_id"
 TYPE_COL     = "Separate"    # 商品区分列
+SALES_COL    = "sales"       # 売上金額列
 
 # ── Separate列の値 ───────────────────────────────────
 COLLAB_VALUE   = "他社IP"
@@ -72,6 +73,10 @@ def classify_orders(df: pd.DataFrame) -> pd.DataFrame:
         "has_own_ip": grouped.apply(lambda t: (t == OWN_IP_VALUE).any()),
     }).reset_index()
 
+    # 注文ID単位の売上合計を結合
+    order_sales = df.groupby(ORDER_ID_COL)[SALES_COL].sum().reset_index()
+    order_flags = order_flags.merge(order_sales, on=ORDER_ID_COL, how="left")
+
     def segment(row):
         if row["has_collab"] and row["has_own_ip"]:
             return "cross"
@@ -88,9 +93,13 @@ def classify_orders(df: pd.DataFrame) -> pd.DataFrame:
 # 4. 集計
 # ────────────────────────────────────────────────
 def summarize(order_flags: pd.DataFrame) -> pd.DataFrame:
-    total = len(order_flags)
+    total_orders = len(order_flags)
+    total_sales  = order_flags[SALES_COL].sum()
 
-    counts = order_flags.groupby("segment").size()
+    agg = order_flags.groupby("segment").agg(
+        注文数=(ORDER_ID_COL, "count"),
+        売上合計=(SALES_COL, "sum"),
+    )
 
     rows = []
     for key, label in [
@@ -98,26 +107,31 @@ def summarize(order_flags: pd.DataFrame) -> pd.DataFrame:
         ("cross",       "他社IP + 自社IP（クロス購買）"),
         ("own_ip_only", "自社IPのみ"),
     ]:
-        n = int(counts.get(key, 0))
+        n = int(agg.loc[key, "注文数"]) if key in agg.index else 0
+        s = float(agg.loc[key, "売上合計"]) if key in agg.index else 0.0
         rows.append({
-            "segment":      key,
-            "セグメント名": label,
-            "注文数":       n,
-            "構成比(%)":    round(n / total * 100, 1),
+            "segment":       key,
+            "セグメント名":  label,
+            "注文数":        n,
+            "注文構成比(%)": round(n / total_orders * 100, 1),
+            "売上合計":      s,
+            "売上構成比(%)": round(s / total_sales * 100, 1) if total_sales else 0.0,
         })
 
     summary = pd.DataFrame(rows)
 
     total_row = pd.DataFrame([{
-        "segment":      "total",
-        "セグメント名": "合計",
-        "注文数":       total,
-        "構成比(%)":    100.0,
+        "segment":       "total",
+        "セグメント名":  "合計",
+        "注文数":        total_orders,
+        "注文構成比(%)": 100.0,
+        "売上合計":      total_sales,
+        "売上構成比(%)": 100.0,
     }])
     summary = pd.concat([summary, total_row], ignore_index=True)
 
     print("\n=== CrossUseセグメント集計結果 ===")
-    print(summary[["セグメント名", "注文数", "構成比(%)"]].to_string(index=False))
+    print(summary[["セグメント名", "注文数", "注文構成比(%)", "売上合計", "売上構成比(%)"]].to_string(index=False))
     print()
     return summary
 
@@ -164,8 +178,16 @@ def export_excel(summary: pd.DataFrame, order_flags: pd.DataFrame, output_path: 
     c.alignment = Alignment(horizontal="left")
     ws.row_dimensions[2].height = 16
 
-    headers    = ["セグメント名", "注文数（カート）", "構成比(%)"]
-    col_widths = [36, 18, 14]
+    ws.merge_cells("A1:E1")
+    ws["A1"].value = "CrossUse分析 ― 他社IP × 自社IP セグメント集計（カート単位）"
+    ws["A1"].font = Font(bold=True, size=13, color="FFFFFF")
+    ws["A1"].fill = PatternFill("solid", fgColor=BLUE_HEADER)
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+
+    ws.merge_cells("A2:E2")
+
+    headers    = ["セグメント名", "注文数（カート）", "注文構成比", "売上合計", "売上構成比"]
+    col_widths = [36, 18, 14, 18, 14]
     for i, (h, w) in enumerate(zip(headers, col_widths), 1):
         ws.column_dimensions[get_column_letter(i)].width = w
         c = ws.cell(3, i, h)
@@ -180,6 +202,7 @@ def export_excel(summary: pd.DataFrame, order_flags: pd.DataFrame, output_path: 
         seg_name = row["セグメント名"]
         color    = COLORS.get(seg_key, "CCCCCC")
         is_total = (seg_key == "total")
+        bg       = "DDDDDD" if is_total else "F5F5F5"
 
         c = ws.cell(r, 1, seg_name)
         c.fill = PatternFill("solid", fgColor=color)
@@ -189,22 +212,32 @@ def export_excel(summary: pd.DataFrame, order_flags: pd.DataFrame, output_path: 
         c = ws.cell(r, 2, row["注文数"])
         c.number_format = '#,##0'
         c.alignment = Alignment(horizontal="right")
-        c.fill = PatternFill("solid", fgColor="DDDDDD" if is_total else "F5F5F5")
-        if is_total:
-            c.font = Font(bold=True)
+        c.fill = PatternFill("solid", fgColor=bg)
+        if is_total: c.font = Font(bold=True)
 
-        c = ws.cell(r, 3, row["構成比(%)"] / 100)
+        c = ws.cell(r, 3, row["注文構成比(%)"] / 100)
         c.number_format = '0.0%'
         c.alignment = Alignment(horizontal="right")
-        c.fill = PatternFill("solid", fgColor="DDDDDD" if is_total else "F5F5F5")
-        if is_total:
-            c.font = Font(bold=True)
+        c.fill = PatternFill("solid", fgColor=bg)
+        if is_total: c.font = Font(bold=True)
+
+        c = ws.cell(r, 4, row["売上合計"])
+        c.number_format = '#,##0'
+        c.alignment = Alignment(horizontal="right")
+        c.fill = PatternFill("solid", fgColor=bg)
+        if is_total: c.font = Font(bold=True)
+
+        c = ws.cell(r, 5, row["売上構成比(%)"] / 100)
+        c.number_format = '0.0%'
+        c.alignment = Alignment(horizontal="right")
+        c.fill = PatternFill("solid", fgColor=bg)
+        if is_total: c.font = Font(bold=True)
 
         ws.row_dimensions[r].height = 22
-        for col in range(1, 4):
+        for col in range(1, 6):
             ws.cell(r, col).border = _thin_border()
 
-    for col in range(1, 4):
+    for col in range(1, 6):
         ws.cell(3, col).border = _thin_border()
 
     # ── シート2: 注文IDリスト ────────────────────────────
@@ -224,8 +257,8 @@ def export_excel(summary: pd.DataFrame, order_flags: pd.DataFrame, output_path: 
         "cross":       "他社IP + 自社IP（クロス購買）",
         "own_ip_only": "自社IPのみ",
     }
-    detail_headers = [ORDER_ID_COL, "他社IP含む", "自社IP含む", "セグメント"]
-    detail_widths  = [20, 14, 14, 34]
+    detail_headers = [ORDER_ID_COL, "他社IP含む", "自社IP含む", "売上合計", "セグメント"]
+    detail_widths  = [20, 14, 14, 16, 34]
     for i, (h, w) in enumerate(zip(detail_headers, detail_widths), 1):
         ws2.column_dimensions[get_column_letter(i)].width = w
         c = ws2.cell(2, i, h)
@@ -244,13 +277,17 @@ def export_excel(summary: pd.DataFrame, order_flags: pd.DataFrame, output_path: 
         ws2.cell(r, 2, "○" if row["has_collab"] else "―").alignment = Alignment(horizontal="center")
         ws2.cell(r, 3, "○" if row["has_own_ip"] else "―").alignment = Alignment(horizontal="center")
 
-        c = ws2.cell(r, 4, seg_label)
+        c = ws2.cell(r, 4, row[SALES_COL])
+        c.number_format = '#,##0'
+        c.alignment = Alignment(horizontal="right")
+
+        c = ws2.cell(r, 5, seg_label)
         c.fill = PatternFill("solid", fgColor=color)
         c.font = Font(bold=True, color="FFFFFF", size=9)
         c.alignment = Alignment(horizontal="left", indent=1)
         ws2.row_dimensions[r].height = 16
 
-        for col in range(1, 5):
+        for col in range(1, 6):
             ws2.cell(r, col).border = _thin_border()
 
     wb.save(output_path)
