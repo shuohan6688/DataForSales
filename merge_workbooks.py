@@ -75,33 +75,60 @@ def merge_dataframes(paths: list[Path], sheet_index: int) -> pd.DataFrame:
     return pd.concat(dfs, ignore_index=True)
 
 
-def write_output(df: pd.DataFrame, output_path: str, sheet_name: str):
-    """将合并后的 DataFrame 写入 Excel，并为表头加样式。"""
-    print(f"\n  書込中：{output_path}  ({len(df):,} 行 × {len(df.columns)} 列)")
+EXCEL_MAX_ROWS = 1_048_575  # Excel 每 Sheet 最大行数（不含表头）
 
+
+def apply_sheet_style(ws):
+    """为 Sheet 表头添加样式并冻结首行。"""
     header_font = Font(bold=True, color=HEADER_FG, size=10)
     header_fill = PatternFill("solid", fgColor=HEADER_BG)
     header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-    # ExcelWriter のコンテキスト内で直接 openpyxl オブジェクトを操作し、
-    # 一度だけ保存することでファイル破損を防ぐ
-    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name=sheet_name, index=False)
+    for cell in ws[1]:
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_align
 
-        ws = writer.sheets[sheet_name]
+    # 自动列宽（采样前 200 行）
+    for col_idx, col_cells in enumerate(ws.iter_cols(min_row=1, max_row=min(200, ws.max_row)), 1):
+        max_len = max((len(str(c.value)) if c.value is not None else 0) for c in col_cells)
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 2, 40)
 
-        # 表头样式
-        for cell in ws[1]:
-            cell.font = header_font
-            cell.fill = header_fill
-            cell.alignment = header_align
+    ws.freeze_panes = "A2"
 
-        # 自动列宽（采样前 500 行，避免超大文件太慢）
-        for col_idx, col_cells in enumerate(ws.iter_cols(min_row=1, max_row=min(500, ws.max_row)), 1):
-            max_len = max((len(str(c.value)) if c.value is not None else 0) for c in col_cells)
-            ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 2, 40)
 
-        ws.freeze_panes = "A2"  # 冻结首行
+def write_output(df: pd.DataFrame, output_path: str, sheet_name: str):
+    """将合并后的 DataFrame 写入 Excel。
+    若总行数超过 Excel 上限（1,048,576），自动按来源文件分 Sheet 写入。
+    """
+    total_rows = len(df)
+    print(f"\n  合計：{total_rows:,} 行 × {len(df.columns)} 列")
+
+    # ── 判断是否超过 Excel 行数上限 ──────────────────────────
+    if total_rows > EXCEL_MAX_ROWS:
+        print(f"  ⚠  行数が Excel の上限（{EXCEL_MAX_ROWS:,}）を超えています。")
+
+        if "__来源文件__" in df.columns:
+            # 按来源文件分 Sheet
+            groups = {name: grp for name, grp in df.groupby("__来源文件__", sort=False)}
+            print(f"  → 来源ファイルごとに {len(groups)} シートに分けて保存します。")
+        else:
+            # 按固定行数分块
+            chunks = [df.iloc[i:i + EXCEL_MAX_ROWS] for i in range(0, total_rows, EXCEL_MAX_ROWS)]
+            groups = {f"{sheet_name}_{idx+1}": chunk for idx, chunk in enumerate(chunks)}
+            print(f"  → {len(groups)} シートに分割して保存します。")
+
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            for sname, chunk in groups.items():
+                safe_name = str(sname)[:31]  # Sheet 名最大 31 文字
+                chunk.to_excel(writer, sheet_name=safe_name, index=False)
+                apply_sheet_style(writer.sheets[safe_name])
+                print(f"    Sheet '{safe_name}'：{len(chunk):,} 行")
+    else:
+        # ── 正常：单 Sheet 写入 ──────────────────────────────
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+            apply_sheet_style(writer.sheets[sheet_name])
 
     print(f"  完成！出力ファイル：{output_path}")
 
