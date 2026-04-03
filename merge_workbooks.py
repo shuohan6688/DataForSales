@@ -51,8 +51,8 @@ def collect_files(files: list[str], directory: str | None) -> list[Path]:
 
 def read_sheet(path: Path, sheet_index: int) -> pd.DataFrame:
     """读取单个工作簿的指定 Sheet，返回 DataFrame。"""
-    print(f"  读取：{path.name}")
-    df = pd.read_excel(path, sheet_name=sheet_index, dtype=str)  # str 保留原始格式
+    print(f"  読込中：{path.name}")
+    df = pd.read_excel(path, sheet_name=sheet_index, keep_default_na=False)
     df.insert(0, "__来源文件__", path.stem)  # 可选：记录来源
     return df
 
@@ -77,33 +77,33 @@ def merge_dataframes(paths: list[Path], sheet_index: int) -> pd.DataFrame:
 
 def write_output(df: pd.DataFrame, output_path: str, sheet_name: str):
     """将合并后的 DataFrame 写入 Excel，并为表头加样式。"""
-    print(f"\n  写入：{output_path}  ({len(df):,} 行 × {len(df.columns)} 列)")
-
-    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name=sheet_name, index=False)
-
-    # 美化表头
-    wb = load_workbook(output_path)
-    ws = wb[sheet_name]
+    print(f"\n  書込中：{output_path}  ({len(df):,} 行 × {len(df.columns)} 列)")
 
     header_font = Font(bold=True, color=HEADER_FG, size=10)
     header_fill = PatternFill("solid", fgColor=HEADER_BG)
     header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-    for cell in ws[1]:
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = header_align
+    # ExcelWriter のコンテキスト内で直接 openpyxl オブジェクトを操作し、
+    # 一度だけ保存することでファイル破損を防ぐ
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name=sheet_name, index=False)
 
-    # 自动列宽（采样前 500 行，避免超大文件太慢）
-    for col_idx, col_cells in enumerate(ws.iter_cols(min_row=1, max_row=min(500, ws.max_row)), 1):
-        max_len = max((len(str(c.value)) if c.value is not None else 0) for c in col_cells)
-        ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 2, 40)
+        ws = writer.sheets[sheet_name]
 
-    ws.freeze_panes = "A2"  # 冻结首行
+        # 表头样式
+        for cell in ws[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_align
 
-    wb.save(output_path)
-    print(f"  完成！输出文件：{output_path}")
+        # 自动列宽（采样前 500 行，避免超大文件太慢）
+        for col_idx, col_cells in enumerate(ws.iter_cols(min_row=1, max_row=min(500, ws.max_row)), 1):
+            max_len = max((len(str(c.value)) if c.value is not None else 0) for c in col_cells)
+            ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 2, 40)
+
+        ws.freeze_panes = "A2"  # 冻结首行
+
+    print(f"  完成！出力ファイル：{output_path}")
 
 
 def main():
