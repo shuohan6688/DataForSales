@@ -149,10 +149,11 @@ def build_monthly_stats(df_all, df_member):
     # 会員月別
     grp_mem = df_member.groupby("__ym__")
     monthly_mem = pd.DataFrame({
-        "会員購入回数":   grp_mem[COL_TXN].nunique(),
-        "会員購入点数":   grp_mem[COL_QTY].sum(),
-        "会員購入金額":   grp_mem[COL_AMOUNT].sum(),
-        "会員人数（月）": grp_mem[COL_MEMBER].nunique(),
+        "会員トランザクション数": grp_mem[COL_TXN].nunique(),
+        "会員購入回数（平均/人）": (grp_mem[COL_TXN].nunique() / grp_mem[COL_MEMBER].nunique()).round(2),
+        "会員購入点数":           grp_mem[COL_QTY].sum(),
+        "会員購入金額":           grp_mem[COL_AMOUNT].sum(),
+        "会員人数（月）":         grp_mem[COL_MEMBER].nunique(),
     }).reset_index().rename(columns={"__ym__": "年月"})
 
     stats = monthly_all.merge(monthly_mem, on="年月", how="left").fillna(0)
