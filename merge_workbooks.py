@@ -52,8 +52,19 @@ def collect_files(files: list[str], directory: str | None) -> list[Path]:
 def read_sheet(path: Path, sheet_index: int) -> pd.DataFrame:
     """读取单个工作簿的指定 Sheet，返回 DataFrame。"""
     print(f"  読込中：{path.name}")
-    df = pd.read_excel(path, sheet_name=sheet_index, keep_default_na=False, engine="openpyxl")
-    df.insert(0, "__来源文件__", path.stem)  # 可选：记录来源
+    try:
+        df = pd.read_excel(path, sheet_name=sheet_index, keep_default_na=False, engine="openpyxl")
+    except KeyError as e:
+        if "[Content_Types].xml" in str(e):
+            print(f"    ⚠  openpyxl 読込失敗。旧形式(.xls)として再試行: {path.name}")
+            try:
+                df = pd.read_excel(path, sheet_name=sheet_index, keep_default_na=False, engine="xlrd")
+            except Exception as e2:
+                sys.exit(f"[エラー] '{path.name}' を読み込めません: {e2}\n"
+                         f"  ヒント: Excel で開いて .xlsx 形式で保存し直してください。")
+        else:
+            raise
+    df.insert(0, "__来源文件__", path.stem)
     return df
 
 

@@ -59,6 +59,22 @@ def collect_files(files, directory):
     return paths
 
 
+def read_one_file(p, sheet_index):
+    """1ファイルを読み込む。openpyxl で失敗した場合は xlrd（.xls 形式）でリトライ。"""
+    try:
+        return pd.read_excel(p, sheet_name=sheet_index, keep_default_na=False, engine="openpyxl")
+    except KeyError as e:
+        if "[Content_Types].xml" in str(e):
+            # 旧形式 .xls の可能性 → xlrd で再試行
+            print(f"    ⚠  openpyxl で読込失敗。旧形式(.xls)として再試行: {p.name}")
+            try:
+                return pd.read_excel(p, sheet_name=sheet_index, keep_default_na=False, engine="xlrd")
+            except Exception as e2:
+                sys.exit(f"[エラー] '{p.name}' を読み込めません: {e2}\n"
+                         f"  ヒント: Excel で一度開いて「名前を付けて保存」→「.xlsx 形式」で保存し直してください。")
+        raise
+
+
 def load_all(paths, sheet_index):
     """全ファイルを読み込んで1つの DataFrame に結合する。
     PICKUP_TIME を datetime に変換し、年月列（__ym__）を付与する。
@@ -66,7 +82,7 @@ def load_all(paths, sheet_index):
     dfs = []
     for p in paths:
         print(f"  読込中: {p.name}")
-        df = pd.read_excel(p, sheet_name=sheet_index, keep_default_na=False, engine="openpyxl")
+        df = read_one_file(p, sheet_index)
         df["__source__"] = p.stem
         dfs.append(df)
     df_all = pd.concat(dfs, ignore_index=True)
