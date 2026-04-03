@@ -113,7 +113,7 @@ def main():
     parser.add_argument("--output", default=DEFAULT_OUTPUT, help=f"输出文件名（默认：{DEFAULT_OUTPUT}）")
     parser.add_argument("--sheet-in", type=int, default=DEFAULT_SHEET_IN, help="读取源文件的第几个 Sheet（0起）")
     parser.add_argument("--sheet-out", default=DEFAULT_SHEET_OUT, help=f"输出 Sheet 名（默认：{DEFAULT_SHEET_OUT}）")
-    parser.add_argument("--no-source-col", action="store_true", help="不添加"来源文件"列")
+    parser.add_argument("--no-source-col", action="store_true", help="不添加'来源文件'列")
     args = parser.parse_args()
 
     print("=== 工作簿合并工具 ===")
