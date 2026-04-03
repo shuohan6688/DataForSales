@@ -30,12 +30,14 @@ DEFAULT_SHEET_IN = 0
 
 # 列名（ソースファイルの表頭と一致させること）
 COL_MEMBER      = "会員ID"
+COL_POS         = "POS番号"
 COL_RECEIPT     = "レシート番号"
 COL_PRODUCT     = "商品名"
 COL_PROD_CODE   = "商品コード"
 COL_QTY         = "数量"
 COL_AMOUNT      = "税込金額"
 COL_PICKUP_TIME = "PICKUP_TIME"   # 時間軸の基準列
+COL_TXN         = "__txn_key__"   # POS番号＋レシート番号 の複合キー
 
 HEADER_BG = "1F4E79"
 HEADER_FG = "FFFFFF"
@@ -87,6 +89,9 @@ def load_all(paths, sheet_index):
         dfs.append(df)
     df_all = pd.concat(dfs, ignore_index=True)
 
+    # POS番号＋レシート番号 の複合トランザクションキーを生成
+    df_all[COL_TXN] = df_all[COL_POS].astype(str) + "_" + df_all[COL_RECEIPT].astype(str)
+
     # PICKUP_TIME → datetime → 年月ラベル（例: "2025-01"）
     df_all[COL_PICKUP_TIME] = pd.to_datetime(df_all[COL_PICKUP_TIME], errors="coerce")
     df_all["__ym__"] = df_all[COL_PICKUP_TIME].dt.to_period("M").astype(str)
@@ -116,7 +121,7 @@ def build_member_stats(df_member):
     """Sheet2: 会員IDごとの購買統計。"""
     grp = df_member.groupby(COL_MEMBER, sort=False)
     stats = pd.DataFrame({
-        "購入回数":           grp[COL_RECEIPT].nunique(),
+        "購入回数":           grp[COL_TXN].nunique(),
         "購入点数":           grp[COL_QTY].sum(),
         "購入金額合計（税込）": grp[COL_AMOUNT].sum(),
     }).reset_index()
@@ -134,13 +139,13 @@ def build_monthly_stats(df_all, df_member):
     grp_all = df_all.groupby("__ym__")
     monthly_all = pd.DataFrame({
         "全体購入金額":   grp_all[COL_AMOUNT].sum(),
-        "全体レシート数": grp_all[COL_RECEIPT].nunique(),
+        "全体トランザクション数": grp_all[COL_TXN].nunique(),
     }).reset_index().rename(columns={"__ym__": "年月"})
 
     # 会員月別
     grp_mem = df_member.groupby("__ym__")
     monthly_mem = pd.DataFrame({
-        "会員購入回数":   grp_mem[COL_RECEIPT].nunique(),
+        "会員購入回数":   grp_mem[COL_TXN].nunique(),
         "会員購入点数":   grp_mem[COL_QTY].sum(),
         "会員購入金額":   grp_mem[COL_AMOUNT].sum(),
         "会員人数（月）": grp_mem[COL_MEMBER].nunique(),
