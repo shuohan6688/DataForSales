@@ -66,7 +66,7 @@ def load_all(paths, sheet_index):
     dfs = []
     for p in paths:
         print(f"  読込中: {p.name}")
-        df = pd.read_excel(p, sheet_name=sheet_index, keep_default_na=False)
+        df = pd.read_excel(p, sheet_name=sheet_index, keep_default_na=False, engine="openpyxl")
         df["__source__"] = p.stem
         dfs.append(df)
     df_all = pd.concat(dfs, ignore_index=True)
