@@ -29,6 +29,7 @@ from openpyxl.utils import get_column_letter
 # ── 列名定義 ─────────────────────────────────────────────────
 COL_POS         = "POS番号"
 COL_RECEIPT     = "レシート番号"
+COL_MEMBER      = "会員ID"
 COL_PRODUCT     = "商品名"
 COL_PROD_CODE   = "商品コード"
 COL_QTY         = "数量"
@@ -488,6 +489,95 @@ def build_product_x_store(df_curr, df_prev):
 
 
 # ══════════════════════════════════════════════════════════════
+#  会員関連シート
+# ══════════════════════════════════════════════════════════════
+
+def _member_metrics(df_scope, df_total):
+    """
+    df_scope: 集計対象（例: ある店舗のデータ）
+    df_total: 構成比の分母（同スコープの全顧客）
+    """
+    df_m   = df_scope[df_scope[COL_MEMBER].astype(str).str.strip() != ""]
+    t_amt  = df_total[COL_AMOUNT].sum()
+    t_qty  = df_total[COL_QTY].sum()
+
+    m_count = df_m[COL_MEMBER].nunique()
+    m_txn   = df_m[COL_TXN].nunique()
+    m_qty   = df_m[COL_QTY].sum()
+    m_amt   = df_m[COL_AMOUNT].sum()
+
+    return {
+        "会員人数":     m_count,
+        "購入金額":     m_amt,
+        "金額構成比":   m_amt / t_amt       if t_amt    else 0,
+        "TXN数":       m_txn,
+        "点数":        m_qty,
+        "数量構成比":   m_qty / t_qty       if t_qty    else 0,
+        "会員客単価":   round(m_amt / m_count, 1) if m_count else 0,
+        "TXN単価":     round(m_amt / m_txn,   1) if m_txn   else 0,
+        "平均購入回数":  round(m_txn / m_count, 2) if m_count else 0,
+    }
+
+
+def build_member_sheet(df_curr, df_prev):
+    """Sheet8: 会員 全体サマリ（1行 + 先月比）。"""
+    curr = _member_metrics(df_curr, df_curr)
+    prev = _member_metrics(df_prev, df_prev) if df_prev is not None else {}
+
+    row = {}
+    MOM_TARGETS = {"購入金額", "TXN数", "点数"}
+    col_order   = []
+
+    for key in ["会員人数", "購入金額", "金額構成比",
+                "TXN数", "点数", "数量構成比",
+                "会員客単価", "TXN単価", "平均購入回数"]:
+        row[key] = curr[key]
+        col_order.append(key)
+        if key in MOM_TARGETS:
+            mom_col = f"{key}_先月比"
+            row[mom_col] = mom(curr[key], prev.get(key))
+            col_order.append(mom_col)
+
+    return pd.DataFrame([row])[col_order]
+
+
+def build_store_x_member(df_curr, df_prev):
+    """Sheet9: 店舗×会員 — 店舗ごとの会員集計。"""
+    stores = sorted(df_curr[COL_STORE].unique())
+    MOM_TARGETS = {"購入金額", "TXN数", "点数"}
+    rows = []
+
+    for store in stores:
+        dc = df_curr[df_curr[COL_STORE] == store]
+        dp = (df_prev[df_prev[COL_STORE] == store]
+              if df_prev is not None else None)
+        dp = dp if dp is not None and len(dp) > 0 else None
+
+        curr = _member_metrics(dc, dc)
+        prev = _member_metrics(dp, dp) if dp is not None else {}
+
+        row = {COL_STORE: store}
+        for key in ["会員人数", "購入金額", "金額構成比",
+                    "TXN数", "点数", "数量構成比",
+                    "会員客単価", "TXN単価", "平均購入回数"]:
+            row[key] = curr[key]
+            if key in MOM_TARGETS:
+                row[f"{key}_先月比"] = mom(curr[key], prev.get(key))
+        rows.append(row)
+
+    col_order = [COL_STORE,
+                 "会員人数",
+                 "購入金額", "金額構成比", "購入金額_先月比",
+                 "TXN数",   "TXN数_先月比",
+                 "点数",    "数量構成比",  "点数_先月比",
+                 "会員客単価", "TXN単価", "平均購入回数"]
+
+    df = pd.DataFrame(rows)
+    df = df[[c for c in col_order if c in df.columns]]
+    return df.sort_values("購入金額", ascending=False).reset_index(drop=True)
+
+
+# ══════════════════════════════════════════════════════════════
 #  スタイル & 出力
 # ══════════════════════════════════════════════════════════════
 
@@ -588,11 +678,14 @@ def main():
         sheets = {k: v for k, v in list(sheets.items())[:3]} | \
                  {"IP別":    build_by_ip(df_curr, df_prev, df_ip_master)} | \
                  {"商品別":  sheets["商品別"]} | \
-                 {"IP×店舗": build_ip_x_store(df_curr, df_prev, df_ip_master)} | \
+                 {"IP×店舗":   build_ip_x_store(df_curr, df_prev, df_ip_master)} | \
                  {"商品×店舗": build_product_x_store(df_curr, df_prev)}
     else:
         print("  ⚠ IP マスタなし → IP別 / IP×店舗シートをスキップ")
         sheets["商品×店舗"] = build_product_x_store(df_curr, df_prev)
+
+    sheets["会員"]     = build_member_sheet(df_curr, df_prev)
+    sheets["店舗×会員"] = build_store_x_member(df_curr, df_prev)
 
     write_excel(args.output, sheets)
 
