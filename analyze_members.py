@@ -121,20 +121,6 @@ def build_summary(df_all):
     return pd.DataFrame(rows, columns=["項目", "値"]), df_member
 
 
-def build_member_stats(df_member):
-    """Sheet2: 会員IDごとの購買統計。"""
-    grp = df_member.groupby(COL_MEMBER, sort=False)
-    stats = pd.DataFrame({
-        "購入回数":           grp[COL_TXN].nunique(),
-        "購入点数":           grp[COL_QTY].sum(),
-        "購入金額合計（税込）": grp[COL_AMOUNT].sum(),
-    }).reset_index()
-    stats["平均購入金額/回"] = (
-        stats["購入金額合計（税込）"] / stats["購入回数"]
-    ).round(1)
-    return stats.sort_values("購入金額合計（税込）", ascending=False).reset_index(drop=True)
-
-
 def build_monthly_stats(df_all, df_member):
     """Sheet4: PICKUP_TIME 基準の月別推移（全体 vs 会員）。"""
     total_amount = df_all[COL_AMOUNT].sum()
@@ -161,16 +147,77 @@ def build_monthly_stats(df_all, df_member):
     return stats.sort_values("年月").reset_index(drop=True)
 
 
-def build_product_stats(df_member):
-    """Sheet3: 商品別 数量・金額・割合（会員購買のみ）。"""
-    total_member_amount = df_member[COL_AMOUNT].sum()
+def _monthly_pivot(df_member, group_keys, metrics: dict, months):
+    """月別集計を縦→横に展開してマージ用 DataFrame を返す。
+    metrics = {出力列名: (集計列, 集計関数)}
+    """
+    frames = []
+    for ym in months:
+        df_ym = df_member[df_member["__ym__"] == ym]
+        grp_ym = df_ym.groupby(group_keys, sort=False)
+        row = {k: agg_fn(grp_ym[col]) for k, (col, agg_fn) in metrics.items()}
+        tmp = pd.DataFrame(row).reset_index()
+        tmp = tmp.rename(columns={k: f"{k}({ym})" for k in metrics})
+        frames.append(tmp)
 
+    result = frames[0]
+    for f in frames[1:]:
+        result = result.merge(f, on=group_keys, how="outer")
+    return result.fillna(0)
+
+
+def build_member_stats(df_member):
+    """Sheet2: 会員IDごとの購買統計 + 月別内訳。"""
+    months = sorted(df_member["__ym__"].dropna().unique())
+
+    # Q1 合計
+    grp = df_member.groupby(COL_MEMBER, sort=False)
+    stats = pd.DataFrame({
+        "購入回数":            grp[COL_TXN].nunique(),
+        "購入点数":            grp[COL_QTY].sum(),
+        "購入金額合計（税込）": grp[COL_AMOUNT].sum(),
+    }).reset_index()
+    stats["平均購入金額/回"] = (stats["購入金額合計（税込）"] / stats["購入回数"]).round(1)
+
+    # 月別内訳
+    monthly = _monthly_pivot(
+        df_member,
+        group_keys=[COL_MEMBER],
+        metrics={
+            "購入回数":            (COL_TXN,    lambda g: g.nunique()),
+            "購入点数":            (COL_QTY,    lambda g: g.sum()),
+            "購入金額合計（税込）": (COL_AMOUNT, lambda g: g.sum()),
+        },
+        months=months,
+    )
+    stats = stats.merge(monthly, on=COL_MEMBER, how="left")
+    return stats.sort_values("購入金額合計（税込）", ascending=False).reset_index(drop=True)
+
+
+def build_product_stats(df_member):
+    """Sheet3: 商品別 数量・金額・割合（会員購買のみ）+ 月別内訳。"""
+    total_member_amount = df_member[COL_AMOUNT].sum()
+    months = sorted(df_member["__ym__"].dropna().unique())
+
+    # Q1 合計
     grp = df_member.groupby([COL_PROD_CODE, COL_PRODUCT], sort=False)
     stats = pd.DataFrame({
-        "購入数量":  grp[COL_QTY].sum(),
-        "購入金額":  grp[COL_AMOUNT].sum(),
+        "購入数量": grp[COL_QTY].sum(),
+        "購入金額": grp[COL_AMOUNT].sum(),
     }).reset_index()
     stats["金額割合"] = stats["購入金額"] / total_member_amount if total_member_amount else 0
+
+    # 月別内訳
+    monthly = _monthly_pivot(
+        df_member,
+        group_keys=[COL_PROD_CODE, COL_PRODUCT],
+        metrics={
+            "購入数量": (COL_QTY,    lambda g: g.sum()),
+            "購入金額": (COL_AMOUNT, lambda g: g.sum()),
+        },
+        months=months,
+    )
+    stats = stats.merge(monthly, on=[COL_PROD_CODE, COL_PRODUCT], how="left")
     return stats.sort_values("購入金額", ascending=False).reset_index(drop=True)
 
 
