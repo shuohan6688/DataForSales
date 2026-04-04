@@ -142,16 +142,18 @@ def build_summary(df_all):
     avg_spend      = round(member_amount / member_count, 1) if member_count else 0   # 客単価
     basket_size    = round(member_qty / member_count, 2)    if member_count else 0   # 連帯率
 
+    OKU = 1_0000_0000  # 1億
+
     rows = [
-        ("全体購入金額合計（税込）",   total_amount),
-        ("会員総人数",                 member_count),
-        ("会員トランザクション数",      member_txn),
-        ("会員購入回数（平均/人）",     round(member_freq, 2)),
-        ("会員購入点数",               member_qty),
-        ("会員の連帯率（点数/人）",     basket_size),
-        ("会員購入金額合計（税込）",    member_amount),
-        ("会員の客単価（金額/人）",     avg_spend),
-        ("会員金額占比",               ratio),
+        ("全体購入金額合計（税込）[億円]",  round(total_amount  / OKU, 4)),
+        ("会員総人数",                      member_count),
+        ("会員トランザクション数",           member_txn),
+        ("会員購入回数（平均/人）",          round(member_freq, 2)),
+        ("会員購入点数",                    member_qty),
+        ("会員の連帯率（点数/人）",          basket_size),
+        ("会員購入金額合計（税込）[億円]",   round(member_amount / OKU, 4)),
+        ("会員の客単価（金額/人）",          avg_spend),
+        ("会員金額占比",                    ratio),
     ]
     return pd.DataFrame(rows, columns=["項目", "値"]), df_member
 
