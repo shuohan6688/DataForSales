@@ -109,8 +109,8 @@ def load_all(paths):
     df_all = pd.concat(dfs, ignore_index=True)
 
     # 集計行除外
+    # ※ POS番号が空でも有効な取引（オンライン注文→店舗受取）があるため除外対象外
     key_empty = (
-        df_all[COL_POS].astype(str).str.strip().isin(["", "nan"]) |
         df_all[COL_RECEIPT].astype(str).str.strip().isin(["", "nan"]) |
         df_all[COL_PROD_CODE].astype(str).str.strip().isin(["", "nan"])
     )

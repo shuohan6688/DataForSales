@@ -94,9 +94,9 @@ def load_all(paths, sheet_index):
     before = len(df_all)
 
     # ── 集計行を除外 ──────────────────────────────────────────
-    # ① キー列が空欄の行（本来のトランザクションは必ずこれらが埋まっている）
+    # ① キー列が空欄の行
+    # ※ POS番号が空でも有効な取引（オンライン注文→店舗受取）があるため除外対象外
     key_empty = (
-        df_all[COL_POS].astype(str).str.strip().isin(["", "nan"]) |
         df_all[COL_RECEIPT].astype(str).str.strip().isin(["", "nan"]) |
         df_all[COL_PROD_CODE].astype(str).str.strip().isin(["", "nan"])
     )
