@@ -108,16 +108,22 @@ def build_summary(df_all):
     member_count   = df_member[COL_MEMBER].nunique()
     member_txn     = df_member[COL_TXN].nunique()
     member_freq    = member_txn / member_count if member_count else 0
+    member_qty     = df_member[COL_QTY].sum()
     member_amount  = df_member[COL_AMOUNT].sum()
     ratio          = member_amount / total_amount if total_amount else 0
+    avg_spend      = round(member_amount / member_count, 1) if member_count else 0   # 客単価
+    basket_size    = round(member_qty / member_count, 2)    if member_count else 0   # 連帯率
 
     rows = [
-        ("全体購入金額合計（税込）",       total_amount),
-        ("会員総人数",                     member_count),
-        ("会員トランザクション数",          member_txn),
-        ("会員購入回数（平均/人）",         round(member_freq, 2)),
-        ("会員購入金額合計（税込）",        member_amount),
-        ("会員金額占比",                   ratio),
+        ("全体購入金額合計（税込）",   total_amount),
+        ("会員総人数",                 member_count),
+        ("会員トランザクション数",      member_txn),
+        ("会員購入回数（平均/人）",     round(member_freq, 2)),
+        ("会員購入点数",               member_qty),
+        ("会員の連帯率（点数/人）",     basket_size),
+        ("会員購入金額合計（税込）",    member_amount),
+        ("会員の客単価（金額/人）",     avg_spend),
+        ("会員金額占比",               ratio),
     ]
     return pd.DataFrame(rows, columns=["項目", "値"]), df_member
 
@@ -314,7 +320,7 @@ def write_excel(output_path, df_summary, df_members, df_products, df_monthly, df
         df_summary.to_excel(writer, sheet_name="概要", index=False)
         ws1 = writer.sheets["概要"]
         style_sheet(ws1)
-        ws1["B7"].number_format = "0.00%"  # 会員金額占比（6行目データ = row 7）
+        ws1["B10"].number_format = "0.00%"  # 会員金額占比（9行目データ = row 10）
 
         # ── Sheet2: 会員別集計 ────────────────────────────────
         df_members.to_excel(writer, sheet_name="会員別集計", index=False)
