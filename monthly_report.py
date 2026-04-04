@@ -394,6 +394,99 @@ def build_by_product(df_curr, df_prev):
     return df.sort_values("購入金額合計（税込）", ascending=False).reset_index(drop=True)
 
 
+# ── 短縮メトリクス名（クロス集計用）─────────────────────────
+# 店舗名プレフィックスが付くため列名を短縮する
+_CROSS_METRICS_ORDER = [
+    "購入金額", "金額構成比", "購入金額_先月比",
+    "TXN数",   "TXN数_先月比",
+    "点数",    "数量構成比",  "点数_先月比",
+    "免税金額", "免税比率",   "免税金額_先月比",
+]
+
+
+def _agg_cross(df, all_keys):
+    """クロス集計用の短縮名集計（行キー + COL_STORE）。"""
+    grp    = df.groupby(all_keys, sort=False)
+    ex_grp = df[df["__exempt__"]].groupby(all_keys, sort=False)
+    base = pd.DataFrame({
+        "購入金額": grp[COL_AMOUNT].sum(),
+        "TXN数":   grp[COL_TXN].nunique(),
+        "点数":    grp[COL_QTY].sum(),
+        "免税金額": ex_grp[COL_AMOUNT].sum(),
+    }).reset_index().fillna(0)
+    return base
+
+
+def _build_cross_tab(df_curr, df_prev, row_keys):
+    """
+    縦 = row_keys / 横 = 店舗 のクロス集計ワイドテーブルを返す。
+    各店舗につき: 購入金額 | 金額構成比 | 先月比 | TXN数 | 先月比 |
+                  点数 | 数量構成比 | 先月比 | 免税金額 | 免税比率 | 先月比
+    """
+    all_keys = row_keys + [COL_STORE]
+
+    curr = _agg_cross(df_curr, all_keys)
+    prev = _agg_cross(df_prev, all_keys) if df_prev is not None else None
+
+    # 先月比（店舗×行キーレベルで計算）
+    has_mom = prev is not None
+    if has_mom:
+        merged = curr.merge(prev, on=all_keys, how="left", suffixes=("", "_前月"))
+        for m in ["購入金額", "TXN数", "点数", "免税金額"]:
+            merged[f"{m}_先月比"] = merged.apply(
+                lambda r, c=m: mom(r[c], r.get(f"{c}_前月")), axis=1
+            )
+        curr = merged.drop(columns=[c for c in merged.columns if c.endswith("_前月")])
+
+    # 店舗別合計（構成比の分母）
+    store_tot = curr.groupby(COL_STORE)[["購入金額", "点数"]].sum().rename(
+        columns={"購入金額": "_t_amt", "点数": "_t_qty"}
+    )
+    curr = curr.merge(store_tot, on=COL_STORE, how="left")
+    curr["金額構成比"] = curr["購入金額"] / curr["_t_amt"].replace(0, float("nan"))
+    curr["数量構成比"] = curr["点数"]     / curr["_t_qty"].replace(0, float("nan"))
+    curr["免税比率"]   = curr["免税金額"] / curr["購入金額"].replace(0, float("nan"))
+    curr = curr.drop(columns=["_t_amt", "_t_qty"])
+
+    # 使用するメトリクス列
+    m_cols = [m for m in _CROSS_METRICS_ORDER if m in curr.columns]
+
+    # ワイド形式に変換：店舗ごとにメトリクスを横展開
+    stores  = sorted(curr[COL_STORE].unique())
+    wide    = curr[row_keys].drop_duplicates().copy()
+    for store in stores:
+        sub = curr[curr[COL_STORE] == store][row_keys + m_cols].copy()
+        sub = sub.rename(columns={m: f"{store}_{m}" for m in m_cols})
+        wide = wide.merge(sub, on=row_keys, how="left")
+
+    # 全店舗合計で降順ソート
+    amt_cols  = [f"{s}_購入金額" for s in stores if f"{s}_購入金額" in wide.columns]
+    wide["_total"] = wide[amt_cols].sum(axis=1)
+    wide = wide.sort_values("_total", ascending=False).drop(columns=["_total"])
+
+    return wide.fillna(0).reset_index(drop=True)
+
+
+def build_ip_x_store(df_curr, df_prev, df_ip_master):
+    """Sheet6: IP × 店舗 クロス集計。"""
+    def add_ip(df):
+        d = df.copy()
+        d[COL_PROD_CODE] = d[COL_PROD_CODE].astype(str).str.strip()
+        d = d.merge(df_ip_master[[COL_PROD_CODE, COL_IP]], on=COL_PROD_CODE, how="left")
+        d[COL_IP] = d[COL_IP].fillna("IP未設定")
+        return d
+
+    return _build_cross_tab(add_ip(df_curr),
+                             add_ip(df_prev) if df_prev is not None else None,
+                             row_keys=[COL_IP])
+
+
+def build_product_x_store(df_curr, df_prev):
+    """Sheet7: 商品 × 店舗 クロス集計。"""
+    return _build_cross_tab(df_curr, df_prev,
+                             row_keys=[COL_PROD_CODE, COL_PRODUCT])
+
+
 # ══════════════════════════════════════════════════════════════
 #  スタイル & 出力
 # ══════════════════════════════════════════════════════════════
@@ -492,12 +585,14 @@ def main():
         "商品別": build_by_product(df_curr, df_prev),
     }
     if df_ip_master is not None:
-        # IP別は店舗別の後・商品別の前に挿入
         sheets = {k: v for k, v in list(sheets.items())[:3]} | \
-                 {"IP別": build_by_ip(df_curr, df_prev, df_ip_master)} | \
-                 {"商品別": sheets["商品別"]}
+                 {"IP別":    build_by_ip(df_curr, df_prev, df_ip_master)} | \
+                 {"商品別":  sheets["商品別"]} | \
+                 {"IP×店舗": build_ip_x_store(df_curr, df_prev, df_ip_master)} | \
+                 {"商品×店舗": build_product_x_store(df_curr, df_prev)}
     else:
-        print("  ⚠ IP マスタなし → IP別シートをスキップ")
+        print("  ⚠ IP マスタなし → IP別 / IP×店舗シートをスキップ")
+        sheets["商品×店舗"] = build_product_x_store(df_curr, df_prev)
 
     write_excel(args.output, sheets)
 
