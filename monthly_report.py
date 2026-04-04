@@ -48,6 +48,7 @@ OKU            = 100_000_000   # 億円
 TAX_EXEMPT_METHOD      = "tax_zero"
 COL_TYPE               = "TYPE"
 TAX_EXEMPT_TYPE_VALUES = {"免税", "TAX_FREE", "TAXFREE", "DUTY_FREE"}
+RETURN_TYPE_VALUES     = {"Return", "RETURN", "返品", "返却", "REFUND"}  # 返品タイプ
 
 TOTAL_KEYWORDS = r"合計|小計|総計|total|subtotal|grand"
 
@@ -132,6 +133,16 @@ def load_all(paths):
     if invalid.sum():
         print(f"  ⚠ PICKUP_TIME 無効 {invalid.sum():,} 行 → '日付不明'")
     df_all.loc[invalid, "__ym__"] = "日付不明"
+
+    # 返品行の金額・数量を負に補正（TYPE == Return かつ正の値の場合のみ）
+    if COL_TYPE in df_all.columns:
+        is_return = df_all[COL_TYPE].astype(str).str.strip().isin(RETURN_TYPE_VALUES)
+        n_return  = is_return.sum()
+        if n_return > 0:
+            for col in [COL_AMOUNT, COL_QTY]:
+                df_all.loc[is_return & (df_all[col] > 0), col] *= -1
+            return_amt = df_all.loc[is_return, COL_AMOUNT].sum()
+            print(f"  返品行: {n_return:,} 行  返品金額合計: {return_amt:,.0f} 円")
 
     # 免税フラグ
     if TAX_EXEMPT_METHOD == "type_col" and COL_TYPE in df_all.columns:

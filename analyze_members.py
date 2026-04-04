@@ -39,6 +39,8 @@ COL_QTY         = "数量"
 COL_AMOUNT      = "税込金額"
 COL_PICKUP_TIME = "PICKUP_TIME"   # 時間軸の基準列
 COL_TXN         = "__txn_key__"   # POS番号＋レシート番号 の複合キー
+COL_TYPE        = "TYPE"
+RETURN_TYPE_VALUES = {"Return", "RETURN", "返品", "返却", "REFUND"}  # 返品タイプ
 
 HEADER_BG = "1F4E79"
 HEADER_FG = "FFFFFF"
@@ -124,6 +126,16 @@ def load_all(paths, sheet_index):
     if invalid_count > 0:
         print(f"  ⚠  PICKUP_TIME が無効な行: {invalid_count:,} 行 → '日付不明' として集計")
     df_all.loc[invalid_mask, "__ym__"] = "日付不明"
+
+    # 返品行の金額・数量を負に補正（TYPE == Return かつ正の値の場合のみ）
+    if COL_TYPE in df_all.columns:
+        is_return = df_all[COL_TYPE].astype(str).str.strip().isin(RETURN_TYPE_VALUES)
+        n_return  = is_return.sum()
+        if n_return > 0:
+            for col in [COL_AMOUNT, COL_QTY]:
+                df_all.loc[is_return & (df_all[col] > 0), col] *= -1
+            return_amt = df_all.loc[is_return, COL_AMOUNT].sum()
+            print(f"  返品行: {n_return:,} 行  返品金額合計: {return_amt:,.0f} 円")
 
     print(f"  合計: {len(df_all):,} 行")
     return df_all
