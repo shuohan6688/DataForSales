@@ -97,6 +97,13 @@ def load_all(paths, sheet_index):
     df_all[COL_PICKUP_TIME] = pd.to_datetime(df_all[COL_PICKUP_TIME], errors="coerce")
     df_all["__ym__"] = df_all[COL_PICKUP_TIME].dt.to_period("M").astype(str)
 
+    # PICKUP_TIME が無効な行は "日付不明" に分類（集計から漏れるのを防ぐ）
+    invalid_mask = df_all[COL_PICKUP_TIME].isna()
+    invalid_count = invalid_mask.sum()
+    if invalid_count > 0:
+        print(f"  ⚠  PICKUP_TIME が無効な行: {invalid_count:,} 行 → '日付不明' として集計")
+    df_all.loc[invalid_mask, "__ym__"] = "日付不明"
+
     print(f"  合計: {len(df_all):,} 行")
     return df_all
 
