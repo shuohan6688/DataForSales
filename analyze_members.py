@@ -27,6 +27,7 @@ from openpyxl.utils import get_column_letter
 # ── 設定 ────────────────────────────────────────────────────
 DEFAULT_OUTPUT   = "会員分析.xlsx"
 DEFAULT_SHEET_IN = 0
+COL_IP           = "IP名称"          # IP マスタの B 列に付ける列名
 
 # 列名（ソースファイルの表頭と一致させること）
 COL_MEMBER      = "会員ID"
@@ -194,6 +195,29 @@ def build_member_stats(df_member):
     return stats.sort_values("購入金額合計（税込）", ascending=False).reset_index(drop=True)
 
 
+def load_ip_master(ip_file: str | None) -> pd.DataFrame | None:
+    """SKU→IP マスタを読み込む。
+    ip_file 未指定の場合はカレントディレクトリから自動検出する。
+    """
+    if ip_file:
+        path = Path(ip_file)
+    else:
+        # "IP" を含むファイルを優先、なければ 2 列の .xlsx を候補にする
+        candidates = [p for p in sorted(Path(".").glob("*.xlsx"))
+                      if "ip" in p.stem.lower() or "IP" in p.stem]
+        if not candidates:
+            return None
+        path = candidates[0]
+
+    print(f"  IP マスタ読込: {path.name}")
+    df = pd.read_excel(path, header=0, keep_default_na=False, engine="openpyxl",
+                       usecols=[0, 1])          # A・B 列のみ
+    df.columns = [COL_PROD_CODE, COL_IP]        # A=商品コード, B=IP名称
+    df[COL_PROD_CODE] = df[COL_PROD_CODE].astype(str).str.strip()
+    df[COL_IP]        = df[COL_IP].astype(str).str.strip()
+    return df.drop_duplicates(subset=COL_PROD_CODE)
+
+
 def build_product_stats(df_member):
     """Sheet3: 商品別 数量・金額・割合（会員購買のみ）+ 月別内訳。"""
     total_member_amount = df_member[COL_AMOUNT].sum()
@@ -218,6 +242,39 @@ def build_product_stats(df_member):
         months=months,
     )
     stats = stats.merge(monthly, on=[COL_PROD_CODE, COL_PRODUCT], how="left")
+    return stats.sort_values("購入金額", ascending=False).reset_index(drop=True)
+
+
+def build_ip_stats(df_member, df_ip_master: pd.DataFrame) -> pd.DataFrame:
+    """Sheet5: IP別 数量・金額・割合（会員購買のみ）+ 月別内訳。"""
+    total_member_amount = df_member[COL_AMOUNT].sum()
+    months = sorted(df_member["__ym__"].dropna().unique())
+
+    # 商品コードを文字列に統一してから結合
+    df = df_member.copy()
+    df[COL_PROD_CODE] = df[COL_PROD_CODE].astype(str).str.strip()
+    df = df.merge(df_ip_master[[COL_PROD_CODE, COL_IP]], on=COL_PROD_CODE, how="left")
+    df[COL_IP] = df[COL_IP].fillna("IP未設定")
+
+    # Q1 合計
+    grp = df.groupby(COL_IP, sort=False)
+    stats = pd.DataFrame({
+        "購入数量": grp[COL_QTY].sum(),
+        "購入金額": grp[COL_AMOUNT].sum(),
+    }).reset_index()
+    stats["金額割合"] = stats["購入金額"] / total_member_amount if total_member_amount else 0
+
+    # 月別内訳
+    monthly = _monthly_pivot(
+        df,
+        group_keys=[COL_IP],
+        metrics={
+            "購入数量": (COL_QTY,    lambda g: g.sum()),
+            "購入金額": (COL_AMOUNT, lambda g: g.sum()),
+        },
+        months=months,
+    )
+    stats = stats.merge(monthly, on=COL_IP, how="left")
     return stats.sort_values("購入金額", ascending=False).reset_index(drop=True)
 
 
@@ -249,7 +306,7 @@ def style_sheet(ws, pct_cols=None):
     ws.freeze_panes = "A2"
 
 
-def write_excel(output_path, df_summary, df_members, df_products, df_monthly):
+def write_excel(output_path, df_summary, df_members, df_products, df_monthly, df_ip=None):
     print(f"\n  書込中: {output_path}")
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
 
@@ -279,6 +336,14 @@ def write_excel(output_path, df_summary, df_members, df_products, df_monthly):
         style_sheet(ws4, pct_cols=[pct_col4])
         print(f"    [月別推移] {len(df_monthly)} ヶ月分")
 
+        # ── Sheet5: IP別集計（IP マスタがある場合のみ）──────
+        if df_ip is not None:
+            df_ip.to_excel(writer, sheet_name="IP別集計", index=False)
+            ws5 = writer.sheets["IP別集計"]
+            pct_col5 = get_column_letter(df_ip.columns.get_loc("金額割合") + 1)
+            style_sheet(ws5, pct_cols=[pct_col5])
+            print(f"    [IP別集計] {len(df_ip):,} IP")
+
     print(f"  完成！→ {output_path}")
 
 
@@ -288,6 +353,7 @@ def main():
     parser.add_argument("--dir",      default=None,           help="スキャン対象ディレクトリ")
     parser.add_argument("--output",   default=DEFAULT_OUTPUT, help=f"出力ファイル名（デフォルト: {DEFAULT_OUTPUT}）")
     parser.add_argument("--sheet-in", type=int, default=DEFAULT_SHEET_IN, help="読込 Sheet インデックス（0起算）")
+    parser.add_argument("--ip-file",  default=None, help="SKU→IP マスタファイル（省略時は自動検出）")
     args = parser.parse_args()
 
     print("=== 会員購買分析ツール ===")
@@ -295,14 +361,20 @@ def main():
     print(f"対象ファイル: {len(paths)} 件")
 
     df_all = load_all(paths, args.sheet_in)
+    df_ip_master = load_ip_master(args.ip_file)
 
     print("\n  集計中...")
     df_summary, df_member = build_summary(df_all)
     df_members  = build_member_stats(df_member)
     df_products = build_product_stats(df_member)
     df_monthly  = build_monthly_stats(df_all, df_member)
+    df_ip       = build_ip_stats(df_member, df_ip_master) if df_ip_master is not None else None
 
-    write_excel(args.output, df_summary, df_members, df_products, df_monthly)
+    if df_ip_master is None:
+        print("  ⚠  IP マスタが見つかりません。IP別集計をスキップします。")
+        print("     --ip-file オプションでファイルを指定するか、フォルダに配置してください。")
+
+    write_excel(args.output, df_summary, df_members, df_products, df_monthly, df_ip)
 
 
 if __name__ == "__main__":
