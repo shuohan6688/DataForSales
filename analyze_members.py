@@ -89,6 +89,27 @@ def load_all(paths, sheet_index):
         df["__source__"] = p.stem
         dfs.append(df)
     df_all = pd.concat(dfs, ignore_index=True)
+    before = len(df_all)
+
+    # ── 集計行を除外 ──────────────────────────────────────────
+    # ① キー列が空欄の行（本来のトランザクションは必ずこれらが埋まっている）
+    key_empty = (
+        df_all[COL_POS].astype(str).str.strip().isin(["", "nan"]) |
+        df_all[COL_RECEIPT].astype(str).str.strip().isin(["", "nan"]) |
+        df_all[COL_PROD_CODE].astype(str).str.strip().isin(["", "nan"])
+    )
+    # ② 商品名・商品コードに合計系キーワードを含む行
+    TOTAL_KEYWORDS = r"合計|小計|総計|total|subtotal|grand"
+    keyword_match = (
+        df_all[COL_PRODUCT].astype(str).str.contains(TOTAL_KEYWORDS, case=False, na=False) |
+        df_all[COL_PROD_CODE].astype(str).str.contains(TOTAL_KEYWORDS, case=False, na=False)
+    )
+    summary_mask = key_empty | keyword_match
+    removed = summary_mask.sum()
+    if removed > 0:
+        print(f"  ⚠  集計行を {removed:,} 行除外しました（キー空欄: {key_empty.sum():,} 行 / キーワード一致: {keyword_match.sum():,} 行）")
+    df_all = df_all[~summary_mask].reset_index(drop=True)
+    print(f"  有効行: {len(df_all):,} 行（全体 {before:,} 行から {removed:,} 行除外）")
 
     # POS番号＋レシート番号 の複合トランザクションキーを生成
     df_all[COL_TXN] = df_all[COL_POS].astype(str) + "_" + df_all[COL_RECEIPT].astype(str)
