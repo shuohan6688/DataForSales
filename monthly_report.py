@@ -251,6 +251,15 @@ METRIC_ORDER = [
     "客単価",
     "免税購入金額合計（税込）",
     "免税比率",
+    # 会員
+    "会員金額（税込）",
+    "会員金額（税込）構成比",
+    "会員購入点数",
+    "会員購入点数構成比",
+    "会員人数",
+    "会員客単価",
+    "会員連帯率",
+    "会員購入頻度",
 ]
 
 def metrics_for(df) -> dict:
@@ -258,14 +267,31 @@ def metrics_for(df) -> dict:
     qty    = df[COL_QTY].sum()
     amount = df[COL_AMOUNT].sum()
     exempt = df.loc[df["__exempt__"], COL_AMOUNT].sum()
+
+    # 会員
+    df_m    = df[df[COL_MEMBER].astype(str).str.strip() != ""]
+    m_count = df_m[COL_MEMBER].nunique()
+    m_txn   = df_m[COL_TXN].nunique()
+    m_qty   = df_m[COL_QTY].sum()
+    m_amt   = df_m[COL_AMOUNT].sum()
+
     return {
         "購入金額合計（税込）":     amount,
         "トランザクション数":      txn,
         "購入点数":               qty,
-        "連帯率":                round(qty  / txn,    2) if txn    else 0,
-        "客単価":                round(amount / txn,  1) if txn    else 0,
+        "連帯率":                round(qty    / txn,     2) if txn     else 0,
+        "客単価":                round(amount / txn,     1) if txn     else 0,
         "免税購入金額合計（税込）": exempt,
-        "免税比率":               exempt / amount       if amount  else 0,
+        "免税比率":               exempt / amount            if amount  else 0,
+        # 会員
+        "会員金額（税込）":        m_amt,
+        "会員金額（税込）構成比":   m_amt / amount            if amount  else 0,
+        "会員購入点数":           m_qty,
+        "会員購入点数構成比":      m_qty / qty               if qty     else 0,
+        "会員人数":               m_count,
+        "会員客単価":             round(m_amt / m_count, 1)  if m_count else 0,
+        "会員連帯率":             round(m_qty / m_count, 2)  if m_count else 0,
+        "会員購入頻度":           round(m_txn / m_count, 2)  if m_count else 0,
     }
 
 
@@ -287,7 +313,7 @@ def build_overview(df_curr, df_prev, curr_ym, prev_ym, budget_data=None):
     """Sheet1: 縦型 KPI（指標 / 当月 / 前月 / 先月比）。金額は億円換算。
     budget_data が指定された場合は下部に予算比 KPI 5行を追加する。
     """
-    AMT_KEYS = {"購入金額合計（税込）", "免税購入金額合計（税込）"}
+    AMT_KEYS = {"購入金額合計（税込）", "免税購入金額合計（税込）", "会員金額（税込）"}
 
     curr = metrics_for(df_curr)
     prev = metrics_for(df_prev) if df_prev is not None else {}
@@ -372,7 +398,7 @@ def build_monthly(df_all, budget_data=None):
 
 
 def _agg_by(df, group_keys):
-    """グループキーで基本集計し DataFrame を返す。"""
+    """グループキーで基本集計し DataFrame を返す（会員 KPI 含む）。"""
     grp        = df.groupby(group_keys, sort=False)
     exempt_grp = df[df["__exempt__"]].groupby(group_keys, sort=False)
 
@@ -392,7 +418,29 @@ def _agg_by(df, group_keys):
     base["免税比率"] = (
         base["免税購入金額合計（税込）"] / base["購入金額合計（税込）"].replace(0, float("nan"))
     )
-    return base
+
+    # 会員集計
+    df_m  = df[df[COL_MEMBER].astype(str).str.strip() != ""]
+    m_grp = df_m.groupby(group_keys, sort=False)
+    m_agg = pd.DataFrame({
+        "会員金額（税込）":  m_grp[COL_AMOUNT].sum(),
+        "会員購入点数":     m_grp[COL_QTY].sum(),
+        "会員人数":        m_grp[COL_MEMBER].nunique(),
+        "_m_txn":         m_grp[COL_TXN].nunique(),
+    }).reset_index().fillna(0)
+
+    base = base.merge(m_agg, on=group_keys, how="left").fillna(0)
+    nan_ = float("nan")
+    base["会員金額（税込）構成比"] = (
+        base["会員金額（税込）"] / base["購入金額合計（税込）"].replace(0, nan_)
+    )
+    base["会員購入点数構成比"] = (
+        base["会員購入点数"] / base["購入点数"].replace(0, nan_)
+    )
+    base["会員客単価"]   = (base["会員金額（税込）"] / base["会員人数"].replace(0, nan_)).round(1)
+    base["会員連帯率"]   = (base["会員購入点数"]    / base["会員人数"].replace(0, nan_)).round(2)
+    base["会員購入頻度"] = (base["_m_txn"]          / base["会員人数"].replace(0, nan_)).round(2)
+    return base.drop(columns=["_m_txn"])
 
 
 def _add_mom_cols(curr_df, df_prev, group_keys, mom_targets):
@@ -462,7 +510,9 @@ def build_by_store(df_curr, df_prev, budget_data=None, curr_ym=None):
 
     df = _add_mom_cols(df, df_prev, [COL_STORE],
                        ["購入金額合計（税込）", "トランザクション数",
-                        "購入点数", "免税購入金額合計（税込）"])
+                        "購入点数", "免税購入金額合計（税込）",
+                        "会員金額（税込）", "会員購入点数", "会員人数",
+                        "会員客単価", "会員連帯率", "会員購入頻度"])
 
     col_order = [COL_STORE]
     if has_budget:
@@ -472,6 +522,13 @@ def build_by_store(df_curr, df_prev, budget_data=None, curr_ym=None):
         "トランザクション数",  "TXN構成比",  "トランザクション数_先月比",
         "購入点数", "連帯率", "客単価",
         "免税購入金額合計（税込）", "免税比率", "免税購入金額合計（税込）_先月比",
+        # 会員
+        "会員金額（税込）", "会員金額（税込）構成比", "会員金額（税込）_先月比",
+        "会員購入点数", "会員購入点数構成比", "会員購入点数_先月比",
+        "会員人数", "会員人数_先月比",
+        "会員客単価", "会員客単価_先月比",
+        "会員連帯率", "会員連帯率_先月比",
+        "会員購入頻度", "会員購入頻度_先月比",
     ]
     df = df[[c for c in col_order if c in df.columns]]
     return df.sort_values("購入金額合計（税込）", ascending=False).reset_index(drop=True)
@@ -498,7 +555,9 @@ def build_by_ip(df_curr, df_prev, df_ip_master):
 
     df = _add_mom_cols(df, dp, [COL_IP],
                        ["購入金額合計（税込）", "トランザクション数",
-                        "購入点数", "免税購入金額合計（税込）"])
+                        "購入点数", "免税購入金額合計（税込）",
+                        "会員金額（税込）", "会員購入点数", "会員人数",
+                        "会員客単価", "会員連帯率", "会員購入頻度"])
 
     col_order = [
         COL_IP,
@@ -506,6 +565,13 @@ def build_by_ip(df_curr, df_prev, df_ip_master):
         "トランザクション数",  "トランザクション数_先月比",
         "購入点数", "数量構成比", "購入点数_先月比",
         "免税購入金額合計（税込）", "免税比率", "免税購入金額合計（税込）_先月比",
+        # 会員
+        "会員金額（税込）", "会員金額（税込）構成比", "会員金額（税込）_先月比",
+        "会員購入点数", "会員購入点数構成比", "会員購入点数_先月比",
+        "会員人数", "会員人数_先月比",
+        "会員客単価", "会員客単価_先月比",
+        "会員連帯率", "会員連帯率_先月比",
+        "会員購入頻度", "会員購入頻度_先月比",
     ]
     df = df[[c for c in col_order if c in df.columns]]
     return df.sort_values("購入金額合計（税込）", ascending=False).reset_index(drop=True)
@@ -522,7 +588,9 @@ def build_by_product(df_curr, df_prev):
 
     df = _add_mom_cols(df, df_prev, [COL_PROD_CODE, COL_PRODUCT],
                        ["購入金額合計（税込）", "トランザクション数",
-                        "購入点数", "免税購入金額合計（税込）"])
+                        "購入点数", "免税購入金額合計（税込）",
+                        "会員金額（税込）", "会員購入点数", "会員人数",
+                        "会員客単価", "会員連帯率", "会員購入頻度"])
 
     col_order = [
         COL_PROD_CODE, COL_PRODUCT,
@@ -530,6 +598,13 @@ def build_by_product(df_curr, df_prev):
         "トランザクション数",  "トランザクション数_先月比",
         "購入点数", "数量構成比", "購入点数_先月比",
         "免税購入金額合計（税込）", "免税比率", "免税購入金額合計（税込）_先月比",
+        # 会員
+        "会員金額（税込）", "会員金額（税込）構成比", "会員金額（税込）_先月比",
+        "会員購入点数", "会員購入点数構成比", "会員購入点数_先月比",
+        "会員人数", "会員人数_先月比",
+        "会員客単価", "会員客単価_先月比",
+        "会員連帯率", "会員連帯率_先月比",
+        "会員購入頻度", "会員購入頻度_先月比",
     ]
     df = df[[c for c in col_order if c in df.columns]]
     return df.sort_values("購入金額合計（税込）", ascending=False).reset_index(drop=True)
@@ -782,7 +857,7 @@ def _style_overview(ws):
             cell = ws.cell(row=row, column=col)
             if cell.value is None or not isinstance(cell.value, (int, float)):
                 continue
-            if label in _OVERVIEW_PCT_LABELS or "（％）" in label:
+            if label in _OVERVIEW_PCT_LABELS or "（％）" in label or "構成比" in label:
                 cell.number_format = "0.0%"
             elif "億円" in label:
                 cell.number_format = "#,##0.0"
