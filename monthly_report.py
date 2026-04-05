@@ -18,6 +18,8 @@ monthly_report.py
 """
 
 import argparse
+import calendar
+import re
 import sys
 from pathlib import Path
 
@@ -175,6 +177,68 @@ def load_ip_master(ip_file):
     return df.drop_duplicates(subset=COL_PROD_CODE)
 
 
+def load_budget(budget_file):
+    """売上予算管理表（月別・店舗別）を読み込む。
+    フォーマット:
+      行0: タイトル / 行1: 注釈 / 行2: ヘッダー（店舗コード(H6 CODE) | 店舗名 | 1月…12月 | 年間合計 | 月平均）
+      データ行、最終行に全店合計（除外）
+    戻り値: {"store_col": str, "month_cols": {1:"1月",…}, "df": DataFrame}
+    """
+    if budget_file:
+        path = Path(budget_file)
+    else:
+        keywords = ["budget", "target", "予算", "目標"]
+        candidates = [p for p in sorted(Path(".").glob("*.xlsx"))
+                      if any(k in p.stem.lower() for k in keywords)]
+        if not candidates:
+            return None
+        path = candidates[0]
+
+    print(f"  Budget ファイル: {path.name}")
+    df = pd.read_excel(path, header=2, keep_default_na=False, engine="openpyxl")
+
+    # 店舗コード列 = 最初の列
+    store_col = df.columns[0]
+    # 全店合計行・空行を除外
+    df = df[~df[store_col].astype(str).str.contains("合計|total|grand", case=False, na=False)]
+    df = df[df[store_col].astype(str).str.strip().replace("nan", "") != ""]
+    df[store_col] = df[store_col].astype(str).str.strip()
+
+    # 月別列を検出（"1月"〜"12月"）
+    month_cols = {}
+    for col in df.columns:
+        m = re.match(r"^(\d{1,2})月$", str(col).strip())
+        if m:
+            month_cols[int(m.group(1))] = col
+
+    print(f"    店舗数: {len(df)}  月別列: {sorted(month_cols.keys())}")
+    return {"store_col": store_col, "month_cols": month_cols, "df": df}
+
+
+def get_month_budget(budget_data, curr_ym):
+    """当月の予算合計（全店）と店舗別予算 dict を返す。"""
+    if budget_data is None:
+        return None, {}
+    month_num = int(curr_ym[5:7])
+    col = budget_data["month_cols"].get(month_num)
+    if col is None:
+        return None, {}
+    df        = budget_data["df"]
+    store_col = budget_data["store_col"]
+    amounts   = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    return float(amounts.sum()), dict(zip(df[store_col].astype(str), amounts))
+
+
+def calc_month_progress(df_curr, curr_ym):
+    """データ内の最終日 ÷ 月の総日数 = 当月進捗率。"""
+    valid  = df_curr[df_curr["__ym__"] != "日付不明"]
+    max_dt = valid[COL_PICKUP_TIME].max()
+    if pd.isna(max_dt):
+        return None
+    year, month = int(curr_ym[:4]), int(curr_ym[5:7])
+    return max_dt.day / calendar.monthrange(year, month)[1]
+
+
 # ══════════════════════════════════════════════════════════════
 #  指標計算ヘルパー
 # ══════════════════════════════════════════════════════════════
@@ -219,35 +283,50 @@ def mom(curr, prev):
 #  Sheet ビルド
 # ══════════════════════════════════════════════════════════════
 
-def build_overview(df_curr, df_prev, curr_ym, prev_ym):
-    """Sheet1: 縦型 KPI（指標 / 当月 / 前月 / 先月比）。金額は億円換算。"""
+def build_overview(df_curr, df_prev, curr_ym, prev_ym, budget_data=None):
+    """Sheet1: 縦型 KPI（指標 / 当月 / 前月 / 先月比）。金額は億円換算。
+    budget_data が指定された場合は下部に予算比 KPI 5行を追加する。
+    """
     AMT_KEYS = {"購入金額合計（税込）", "免税購入金額合計（税込）"}
-    PCT_KEYS  = {"免税比率"}
 
     curr = metrics_for(df_curr)
     prev = metrics_for(df_prev) if df_prev is not None else {}
 
     rows = []
+    prev_col = prev_ym or "前月"
     for key in METRIC_ORDER:
         c = curr[key]
         p = prev.get(key)
         m = mom(c, p)
-
         if key in AMT_KEYS:
             label  = f"{key}[億円]"
             c_disp = round(c / OKU, 4)
             p_disp = round(p / OKU, 4) if p is not None else None
         else:
-            label  = key
-            c_disp = c
-            p_disp = p
+            label, c_disp, p_disp = key, c, p
+        rows.append({"指標": label, curr_ym: c_disp, prev_col: p_disp, "先月比": m})
 
-        rows.append({
-            "指標":              label,
-            curr_ym:            c_disp,
-            prev_ym or "前月":  p_disp,
-            "先月比":           m,
-        })
+    # ── 予算比 KPI（Budget ファイルがある場合のみ）──────────
+    if budget_data is not None:
+        month_target, _ = get_month_budget(budget_data, curr_ym)
+        month_progress  = calc_month_progress(df_curr, curr_ym)
+        month_mtd       = df_curr[COL_AMOUNT].sum()
+
+        if month_target and month_target > 0:
+            target_reach = (month_mtd / (month_target * month_progress)
+                            if month_progress else None)
+            gap          = month_mtd / month_target - 1
+        else:
+            target_reach = gap = None
+
+        rows += [
+            {"指標": "── 予算比 ──────────────", curr_ym: None, prev_col: None, "先月比": None},
+            {"指標": "Month_Progress（％）",    curr_ym: month_progress,  prev_col: None, "先月比": None},
+            {"指標": "Month_JPY_MTD",           curr_ym: month_mtd,       prev_col: None, "先月比": None},
+            {"指標": "Month_Target",            curr_ym: month_target,    prev_col: None, "先月比": None},
+            {"指標": "Month_Target_Reach（％）", curr_ym: target_reach,    prev_col: None, "先月比": None},
+            {"指標": "GAP（％）",               curr_ym: gap,             prev_col: None, "先月比": None},
+        ]
 
     return pd.DataFrame(rows)
 
@@ -627,12 +706,41 @@ def style_sheet(ws, df):
     ws.freeze_panes = "A2"
 
 
+_OVERVIEW_PCT_LABELS = {
+    "Month_Progress（％）", "Month_Target_Reach（％）", "GAP（％）", "免税比率",
+}
+
+def _style_overview(ws):
+    """概要シート専用: 行ラベルを見てセル単位でフォーマット適用。"""
+    for row in range(2, ws.max_row + 1):
+        label = str(ws.cell(row=row, column=1).value or "")
+        for col in range(2, ws.max_column + 1):
+            cell = ws.cell(row=row, column=col)
+            if cell.value is None or not isinstance(cell.value, (int, float)):
+                continue
+            if label in _OVERVIEW_PCT_LABELS or "（％）" in label:
+                cell.number_format = "0.0%"
+            elif "億円" in label:
+                cell.number_format = "#,##0.0"
+            elif label in {"Month_JPY_MTD", "Month_Target"}:
+                cell.number_format = "#,##0"
+            elif "先月比" == ws.cell(row=1, column=col).value:
+                cell.number_format = "+0.0%;-0.0%;0.0%"
+                cell.fill = PatternFill("solid",
+                    fgColor=MOM_POS_BG if cell.value >= 0 else MOM_NEG_BG)
+
+
 def write_excel(output_path, sheets: dict):
     print(f"\n  書込中: {output_path}")
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         for name, df in sheets.items():
             df.to_excel(writer, sheet_name=name[:31], index=False)
-            style_sheet(writer.sheets[name[:31]], df)
+            ws = writer.sheets[name[:31]]
+            if name == "概要":
+                style_sheet(ws, df)   # 表頭・列幅・凍結
+                _style_overview(ws)   # 行単位の数値フォーマット
+            else:
+                style_sheet(ws, df)
             print(f"    [{name}] {len(df):,} 行")
     print(f"\n  完成！→ {output_path}")
 
@@ -646,7 +754,8 @@ def main():
     parser.add_argument("files",     nargs="*", help="対象 xlsx（省略時は自動スキャン）")
     parser.add_argument("--dir",     default=None,           help="スキャンディレクトリ")
     parser.add_argument("--output",  default=DEFAULT_OUTPUT, help="出力ファイル名")
-    parser.add_argument("--ip-file", default=None,           help="SKU→IP マスタ")
+    parser.add_argument("--ip-file",     default=None, help="SKU→IP マスタ")
+    parser.add_argument("--budget-file", default=None, help="売上予算管理表 xlsx（省略時は自動検出）")
     args = parser.parse_args()
 
     print("=== 月次レポート生成ツール ===")
@@ -655,6 +764,7 @@ def main():
 
     df_all       = load_all(paths)
     df_ip_master = load_ip_master(args.ip_file)
+    budget_data  = load_budget(args.budget_file)
 
     # 当月・前月を自動判定
     valid_months = sorted(m for m in df_all["__ym__"].unique() if m != "日付不明")
@@ -669,7 +779,7 @@ def main():
 
     print("  集計中...")
     sheets = {
-        "概要":  build_overview(df_curr, df_prev, curr_ym, prev_ym),
+        "概要":  build_overview(df_curr, df_prev, curr_ym, prev_ym, budget_data),
         "月別":  build_monthly(df_all),
         "店舗別": build_by_store(df_curr, df_prev),
         "商品別": build_by_product(df_curr, df_prev),
