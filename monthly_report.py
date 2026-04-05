@@ -793,6 +793,124 @@ def build_store_x_member(df_curr, df_prev):
 
 
 # ══════════════════════════════════════════════════════════════
+#  説明シート（Glossary）
+# ══════════════════════════════════════════════════════════════
+
+_GLO_COLS = ["日本語指標", "英語略称", "英語計算式 (Formula)", "日本語計算式"]
+
+def _sec(text):
+    return {"日本語指標": text, "英語略称": "", "英語計算式 (Formula)": "", "日本語計算式": ""}
+
+def _kpi(jp, en, formula, jp_formula):
+    return {"日本語指標": jp, "英語略称": en,
+            "英語計算式 (Formula)": formula, "日本語計算式": jp_formula}
+
+def build_glossary():
+    """Glossary シート: KPI 定義一覧（3セクション）。"""
+    rows = [
+        _sec("【基本指標】  売上を構成する要素を細かく分解したものです。"
+             "  全体売上 ＝ TXN数 × 客単価（連帯率 × 平均単価）"),
+        _kpi("全体購入金額合計", "Sales",
+             "Σ(Tax-Incl. Amount)",
+             "全取引の税込販売金額の合計"),
+        _kpi("TXN数", "TXNs",
+             "COUNTD(TXN_KEY)",
+             "取引件数（レジを通った回数）"),
+        _kpi("点数", "Qty",
+             "Σ(Quantity)",
+             "販売済みの商品の総個数"),
+        _kpi("連帯率", "UPT",
+             "Qty ÷ TXNs",
+             "点数/TXN数（1回あたりの買上げ点数）"),
+        _kpi("客単価", "ATV",
+             "Sales ÷ TXNs",
+             "金額/TXN数（1回あたりの買上げ金額）"),
+
+        _sec("【免税（Tax Free）指標】  インバウンド需要を測る重要な指標です。"),
+        _kpi("免税購入金額合計", "TF Sales",
+             "Σ(Amount | Tax = 0)",
+             "免税取引の税込販売金額の合計"),
+        _kpi("免税比率", "TF %",
+             "TF Sales ÷ Sales",
+             "免税金額/全体金額×100%"),
+        _kpi("免税TXN数", "TF TXNs",
+             "COUNTD(TXN_KEY | Tax = 0)",
+             "免税取引の件数"),
+        _kpi("免税数量", "TF Qty",
+             "Σ(Qty | Tax = 0)",
+             "免税で販売した商品の総個数"),
+        _kpi("免税連帯率", "TF UPT",
+             "TF Qty ÷ TF TXNs",
+             "免税数量/免税TXN数"),
+        _kpi("免税客単価", "TF ATV",
+             "TF Sales ÷ TF TXNs",
+             "免税金額/免税TXN数"),
+
+        _sec("【会員（CRM）指標】  リピーター戦略やファン化を測る指標です。"),
+        _kpi("会員金額", "Mbr Sales",
+             "Σ(Amount | Member ID ≠ blank)",
+             "会員証が提示された取引の合計金額"),
+        _kpi("会員購入点数", "Mbr Qty",
+             "Σ(Qty | Member ID ≠ blank)",
+             "会員が購入した商品の総個数"),
+        _kpi("会員人数", "Active Mbr",
+             "COUNTD(Member ID | Member ID ≠ blank)",
+             "期間中に購入のあったユニークな会員数"),
+        _kpi("会員客単価", "Mbr ATV",
+             "Mbr Sales ÷ Active Mbr",
+             "会員金額/会員TXN数"),
+        _kpi("会員連帯率", "Mbr UPT",
+             "Mbr Qty ÷ Active Mbr",
+             "会員点数/会員TXN数"),
+        _kpi("会員購入頻度", "Frequency",
+             "Mbr TXNs ÷ Active Mbr",
+             "会員TXN数/会員人数（期間中の来店回数）"),
+    ]
+    return pd.DataFrame(rows, columns=_GLO_COLS)
+
+
+def _style_glossary(ws):
+    """Glossary シート専用スタイル。"""
+    h_font  = Font(bold=True, color=HEADER_FG, size=10)
+    h_fill  = PatternFill("solid", fgColor=HEADER_BG)
+    h_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    s_font  = Font(bold=True, color=HEADER_FG, size=10)
+    s_fill  = PatternFill("solid", fgColor=HEADER_BG)  # ダークブルー（ヘッダー同色）
+    k_alt   = PatternFill("solid", fgColor="EBF3FB")   # 薄水色（交互行）
+
+    # ヘッダー行
+    for cell in ws[1]:
+        cell.font = h_font; cell.fill = h_fill; cell.alignment = h_align
+
+    kpi_count = 0
+    for row in range(2, ws.max_row + 1):
+        is_section = str(ws.cell(row=row, column=2).value or "").strip() == ""
+        for col in range(1, 5):
+            cell = ws.cell(row=row, column=col)
+            if is_section:
+                cell.font      = s_font
+                cell.fill      = s_fill
+                cell.alignment = Alignment(horizontal="left", vertical="center",
+                                           wrap_text=True)
+            else:
+                kpi_count += 1
+                if kpi_count % 2 == 0:
+                    cell.fill = k_alt
+                cell.alignment = Alignment(vertical="center", wrap_text=True)
+
+        # セクション行は A:D をマージ
+        if is_section:
+            ws.merge_cells(f"A{row}:D{row}")
+
+    # 列幅固定
+    ws.column_dimensions["A"].width = 22
+    ws.column_dimensions["B"].width = 16
+    ws.column_dimensions["C"].width = 40
+    ws.column_dimensions["D"].width = 40
+    ws.row_dimensions[1].height     = 20
+
+
+# ══════════════════════════════════════════════════════════════
 #  スタイル & 出力
 # ══════════════════════════════════════════════════════════════
 
@@ -875,9 +993,11 @@ def write_excel(output_path, sheets: dict):
         for name, df in sheets.items():
             df.to_excel(writer, sheet_name=name[:31], index=False)
             ws = writer.sheets[name[:31]]
-            if name == "概要":
-                style_sheet(ws, df)   # 表頭・列幅・凍結
-                _style_overview(ws)   # 行単位の数値フォーマット
+            if name == "Overview":
+                style_sheet(ws, df)
+                _style_overview(ws)
+            elif name == "Glossary":
+                _style_glossary(ws)
             else:
                 style_sheet(ws, df)
             print(f"    [{name}] {len(df):,} 行")
@@ -918,23 +1038,24 @@ def main():
 
     print("  集計中...")
     sheets = {
-        "概要":  build_overview(df_curr, df_prev, curr_ym, prev_ym, budget_data),
-        "月別":  build_monthly(df_all, budget_data),
-        "店舗別": build_by_store(df_curr, df_prev, budget_data, curr_ym),
-        "商品別": build_by_product(df_curr, df_prev),
+        "Glossary":  build_glossary(),
+        "Overview":  build_overview(df_curr, df_prev, curr_ym, prev_ym, budget_data),
+        "Monthly":   build_monthly(df_all, budget_data),
+        "By Store":  build_by_store(df_curr, df_prev, budget_data, curr_ym),
+        "By SKU":    build_by_product(df_curr, df_prev),
     }
     if df_ip_master is not None:
-        sheets = {k: v for k, v in list(sheets.items())[:3]} | \
-                 {"IP別":    build_by_ip(df_curr, df_prev, df_ip_master)} | \
-                 {"商品別":  sheets["商品別"]} | \
-                 {"IP×店舗":   build_ip_x_store(df_curr, df_prev, df_ip_master)} | \
-                 {"商品×店舗": build_product_x_store(df_curr, df_prev)}
+        sheets = {k: v for k, v in list(sheets.items())[:4]} | \
+                 {"By IP":      build_by_ip(df_curr, df_prev, df_ip_master)} | \
+                 {"By SKU":     sheets["By SKU"]} | \
+                 {"IP x Store": build_ip_x_store(df_curr, df_prev, df_ip_master)} | \
+                 {"SKU x Store": build_product_x_store(df_curr, df_prev)}
     else:
-        print("  ⚠ IP マスタなし → IP別 / IP×店舗シートをスキップ")
-        sheets["商品×店舗"] = build_product_x_store(df_curr, df_prev)
+        print("  ⚠ IP マスタなし → By IP / IP x Store シートをスキップ")
+        sheets["SKU x Store"] = build_product_x_store(df_curr, df_prev)
 
-    sheets["会員"]     = build_member_sheet(df_curr, df_prev)
-    sheets["店舗×会員"] = build_store_x_member(df_curr, df_prev)
+    sheets["Member"]        = build_member_sheet(df_curr, df_prev)
+    sheets["Store x Member"] = build_store_x_member(df_curr, df_prev)
 
     write_excel(args.output, sheets)
 
