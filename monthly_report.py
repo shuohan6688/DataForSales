@@ -107,12 +107,12 @@ def _to_en(col: str) -> str:
         return _BASE_MAP[col]
     if col.endswith(_MOM_JP):
         base = col[:-len(_MOM_JP)]
-        return _BASE_MAP.get(base, base) + _MOM_EN
-    # クロス集計列 "{store}_{metric}[_先月比]"
+        if base in _BASE_MAP:
+            return _BASE_MAP[base] + _MOM_EN
+        # クロス集計の MoM列: "{store}_{metric}_先月比" → 再帰でベース変換
+        return _to_en(base) + _MOM_EN
+    # クロス集計列 "{store}_{metric}"（長い名前を優先してマッチ）
     for jp, en in sorted(_BASE_MAP.items(), key=lambda x: -len(x[0])):
-        sfx_m = f"_{jp}{_MOM_JP}"
-        if col.endswith(sfx_m):
-            return col[:-len(sfx_m)] + f"_{en}{_MOM_EN}"
         sfx = f"_{jp}"
         if col.endswith(sfx):
             return col[:-len(sfx)] + f"_{en}"
@@ -121,6 +121,21 @@ def _to_en(col: str) -> str:
 def _rename_df(df: pd.DataFrame) -> pd.DataFrame:
     """DataFrame の全列名を英語略称に変換して返す。"""
     return df.rename(columns={c: _to_en(c) for c in df.columns})
+
+# 小数1桁（#,##0.0）で表示する英語列名セット
+_FLOAT_EN = {"UPT", "ATV", "TF UPT", "TF ATV", "Mbr ATV", "Mbr UPT",
+             "Frequency", "Avg Visits", "Mbr TXN ATV"}
+
+def _is_float_col(col: str) -> bool:
+    """列が #,##0.0 フォーマット対象かを返す（クロス集計列も含む）。"""
+    if "[¥100M]" in col:
+        return True
+    if col in _FLOAT_EN:
+        return True
+    for fc in _FLOAT_EN:
+        if col.endswith(f"_{fc}"):
+            return True
+    return False
 # ─────────────────────────────────────────────────────────────
 
 
@@ -985,6 +1000,7 @@ def style_sheet(ws, df):
         is_mom    = "_MoM%" in col or col == "MoM%"
         is_pct    = not is_mom and "%" in col
         is_target = "Target" in col and "%" not in col
+        is_float  = not is_mom and not is_pct and _is_float_col(col)
 
         for row in range(2, ws.max_row + 1):
             cell = ws[f"{letter}{row}"]
@@ -1001,6 +1017,10 @@ def style_sheet(ws, df):
             elif is_pct:
                 cell.number_format = "0.00%"
             elif is_target:
+                cell.number_format = "#,##0"
+            elif is_float:
+                cell.number_format = "#,##0.0"
+            elif isinstance(cell.value, (int, float)):
                 cell.number_format = "#,##0"
 
     # 列幅（先頭 200 行でサンプリング）
