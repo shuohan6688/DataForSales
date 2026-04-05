@@ -313,8 +313,7 @@ def build_overview(df_curr, df_prev, curr_ym, prev_ym, budget_data=None):
         month_mtd       = df_curr[COL_AMOUNT].sum()
 
         if month_target and month_target > 0:
-            target_reach = (month_mtd / (month_target * month_progress)
-                            if month_progress else None)
+            target_reach = month_mtd / month_target
             gap          = month_mtd / month_target - 1
         else:
             target_reach = gap = None
@@ -348,9 +347,8 @@ def build_monthly(df_all, budget_data=None):
             month_progress  = calc_month_progress(df_ym, ym)
             month_mtd       = df_ym[COL_AMOUNT].sum()
             if month_target and month_target > 0:
+                reach = month_mtd / month_target
                 gap   = month_mtd / month_target - 1
-                reach = (month_mtd / (month_target * month_progress)
-                         if month_progress else None)
             else:
                 month_target = reach = gap = None
             row["Month_Target"]           = month_target
@@ -451,8 +449,8 @@ def build_by_store(df_curr, df_prev, budget_data=None, curr_ym=None):
             mtd    = float(df.loc[df[COL_STORE] == store,
                                   "購入金額合計（税込）"].values[0])
             if target and target > 0:
+                reach = mtd / target
                 gap   = mtd / target - 1
-                reach = mtd / (target * month_progress) if month_progress else None
             else:
                 target = reach = gap = None
             targets.append(target)

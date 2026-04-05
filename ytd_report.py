@@ -322,9 +322,8 @@ def build_overview(df_all, budget_data=None):
         year_ytd      = df_all[COL_AMOUNT].sum()
 
         if year_target and year_target > 0:
+            reach = year_ytd / year_target
             gap   = year_ytd / year_target - 1
-            reach = (year_ytd / (year_target * year_progress)
-                     if year_progress else None)
         else:
             year_target = reach = gap = None
 
@@ -340,13 +339,72 @@ def build_overview(df_all, budget_data=None):
     return pd.DataFrame(rows)
 
 
-def build_monthly(df_all):
-    """Sheet2: 月別 KPI（年月 | KPI列…）。"""
+def _get_month_budget_total(budget_data, ym):
+    """当月の予算合計（全店）を返す。"""
+    if budget_data is None:
+        return None
+    col = budget_data["month_cols"].get(int(ym[5:7]))
+    if col is None:
+        return None
+    return float(pd.to_numeric(budget_data["df"][col], errors="coerce").fillna(0).sum())
+
+
+def _get_store_year_budget(budget_data):
+    """店舗ごとの年間合計予算を dict で返す。"""
+    if budget_data is None:
+        return {}
+    df        = budget_data["df"]
+    store_col = budget_data["store_col"]
+    result = {}
+    for _, row in df.iterrows():
+        store = str(row[store_col]).strip()
+        total = sum(float(pd.to_numeric(row.get(col, 0), errors="coerce") or 0)
+                    for col in budget_data["month_cols"].values())
+        result[store] = total
+    return result
+
+
+def _lookup_store_budget(store_val, store_budgets):
+    """[CODE]店名 形式に対応した 3 段階の予算照合。"""
+    s = str(store_val).strip()
+    if s in store_budgets:
+        return store_budgets[s]
+    m = re.match(r"^\[([^\]]+)\]", s)
+    if m:
+        code = m.group(1).strip()
+        if code in store_budgets:
+            return store_budgets[code]
+    for bkey, bval in store_budgets.items():
+        if bkey in s or s in bkey:
+            return bval
+    return None
+
+
+def _budget_kpis(ytd_amt, target):
+    """(reach, gap) を返す。target が None/0 の場合は (None, None)。"""
+    if target and target > 0:
+        return ytd_amt / target, ytd_amt / target - 1
+    return None, None
+
+
+def build_monthly(df_all, budget_data=None):
+    """Sheet2: 月別 KPI（年月 | [予算列] | KPI列…）。"""
     months = sorted(m for m in df_all["__ym__"].unique() if m != "日付不明")
     rows = []
     for ym in months:
-        kpi = calc_kpi(df_all[df_all["__ym__"] == ym])
-        rows.append({"年月": ym, **{k: kpi[k] for k in KPI_ORDER}})
+        df_ym = df_all[df_all["__ym__"] == ym]
+        kpi   = calc_kpi(df_ym)
+        row   = {"年月": ym}
+
+        if budget_data is not None:
+            target       = _get_month_budget_total(budget_data, ym)
+            reach, gap   = _budget_kpis(df_ym[COL_AMOUNT].sum(), target)
+            row["Month_Target"]           = target
+            row["Month_Target_Reach（％）"] = reach
+            row["GAP（％）"]               = gap
+
+        row.update({k: kpi[k] for k in KPI_ORDER})
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -367,9 +425,24 @@ def _build_by_dim(df_all, group_keys):
     return df.sort_values("全体購入金額合計（税込）", ascending=False).reset_index(drop=True)
 
 
-def build_by_store(df_all):
+def build_by_store(df_all, budget_data=None):
     """Sheet3: 店舗別 YTD KPI。"""
-    return _build_by_dim(df_all, [COL_STORE])
+    df = _build_by_dim(df_all, [COL_STORE])
+
+    if budget_data is not None:
+        store_budgets = _get_store_year_budget(budget_data)
+        targets, reaches, gaps = [], [], []
+        for store in df[COL_STORE]:
+            target     = _lookup_store_budget(store, store_budgets)
+            ytd        = float(df.loc[df[COL_STORE] == store,
+                                      "全体購入金額合計（税込）"].values[0])
+            reach, gap = _budget_kpis(ytd, target)
+            targets.append(target); reaches.append(reach); gaps.append(gap)
+        df.insert(1, "Year_Target",            targets)
+        df.insert(2, "YEAR_TARGET_REACH（％）", reaches)
+        df.insert(3, "GAP（％）",              gaps)
+
+    return df
 
 
 def build_by_ip(df_all, df_ip_master):
@@ -396,7 +469,7 @@ def _cell_format(col_name: str) -> str:
       小数 → "#,##0.0"   （連帯率・客単価・億円など）
       整数 → "#,##0"     （TXN数・点数・金額 raw など）
     """
-    if any(k in col_name for k in ("比率",)):
+    if any(k in col_name for k in ("比率",)) or "（％）" in col_name:
         return "0.0%"
     if any(k in col_name for k in FLOAT_KPI) or "億円" in col_name:
         return "#,##0.0"
@@ -493,8 +566,8 @@ def main():
     print("  集計中...")
     sheets = {
         "概要":  build_overview(df_all, budget_data),
-        "月別":  build_monthly(df_all),
-        "店舗別": build_by_store(df_all),
+        "月別":  build_monthly(df_all, budget_data),
+        "店舗別": build_by_store(df_all, budget_data),
         "商品別": build_by_product(df_all),
     }
     if df_ip_master is not None:
