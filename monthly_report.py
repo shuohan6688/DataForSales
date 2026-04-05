@@ -91,7 +91,7 @@ _BASE_MAP: dict[str, str] = {
     # Cross-tab short names
     "購入金額": "Sales", "TXN数": "TXNs", "点数": "Qty", "免税金額": "TF Sales",
     # Member sheet (_member_metrics)
-    "TXN単価": "Mbr TXN ATV", "平均購入回数": "Avg Visits",
+    "TXN単価": "Mbr TXN ATV", "平均購入回数": "Frequency",
     # Budget
     "Month_JPY_MTD":          "Month MTD",
     "Month_Progress（％）":    "Month Progress%",
@@ -124,7 +124,7 @@ def _rename_df(df: pd.DataFrame) -> pd.DataFrame:
 
 # 小数1桁（#,##0.0）で表示する英語列名セット
 _FLOAT_EN = {"UPT", "ATV", "TF UPT", "TF ATV", "Mbr ATV", "Mbr UPT",
-             "Frequency", "Avg Visits", "Mbr TXN ATV"}
+             "Frequency", "Mbr TXN ATV"}
 
 def _is_float_col(col: str) -> bool:
     """列が #,##0.0 フォーマット対象かを返す（クロス集計列も含む）。"""
@@ -921,7 +921,7 @@ def build_glossary():
         _kpi("会員人数",        "Number of Unique Members",          "Active Mbr",
              "COUNTD(Member ID | Member ID ≠ blank)", "期間中に購入のあったユニークな会員数"),
         _kpi("会員客単価",      "Member Average Transaction Value",  "Mbr ATV",
-             "Mbr Sales ÷ Active Mbr",               "会員金額/会員TXN数"),
+             "Mbr Sales ÷ Active Mbr",               "会員金額/会員人数"),
         _kpi("会員連帯率",      "Member Units Per Transaction",      "Mbr UPT",
              "Mbr Qty ÷ Active Mbr",                 "会員点数/会員TXN数"),
         _kpi("会員購入頻度",    "Purchase Frequency",                "Frequency",
@@ -1036,7 +1036,7 @@ def style_sheet(ws, df):
 
 
 _OVW_FLOAT_LABELS = {"UPT", "ATV", "TF UPT", "TF ATV", "Mbr ATV", "Mbr UPT",
-                     "Frequency", "Avg Visits"}
+                     "Frequency"}
 _OVW_INT_LABELS   = {"Month MTD", "Month Target", "TXNs", "Mbr Qty",
                      "Qty", "Active Mbr", "TF TXNs", "TF Qty"}
 
