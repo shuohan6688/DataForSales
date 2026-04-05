@@ -424,9 +424,30 @@ def build_by_store(df_curr, df_prev, budget_data=None, curr_ym=None):
     if has_budget:
         _, store_budgets  = get_month_budget(budget_data, curr_ym)
         month_progress    = calc_month_progress(df_curr, curr_ym)
+
+        def _lookup_budget(store_val):
+            """店舗値から予算を検索する。
+            1) 完全一致  2) [CODE]店名 形式からコード部分を抽出して照合
+            """
+            s = str(store_val).strip()
+            # 完全一致
+            if s in store_budgets:
+                return store_budgets[s]
+            # [CODE] プレフィックスを抽出（例: "[JP16]なんば店" → "JP16"）
+            m = re.match(r"^\[([^\]]+)\]", s)
+            if m:
+                code = m.group(1).strip()
+                if code in store_budgets:
+                    return store_budgets[code]
+            # 予算ファイルのキーに店舗値が部分一致するか逆引き
+            for bkey, bval in store_budgets.items():
+                if bkey in s or s in bkey:
+                    return bval
+            return None
+
         targets, reaches, gaps = [], [], []
         for store in df[COL_STORE]:
-            target = store_budgets.get(str(store))
+            target = _lookup_budget(store)
             mtd    = float(df.loc[df[COL_STORE] == store,
                                   "購入金額合計（税込）"].values[0])
             if target and target > 0:
