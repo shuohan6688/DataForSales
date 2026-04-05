@@ -59,6 +59,75 @@ TOTAL_KEYWORDS         = r"合計|小計|総計|total|subtotal|grand"
 
 HEADER_BG  = "1F4E79"
 HEADER_FG  = "FFFFFF"
+MOM_POS_BG = "E2EFDA"
+MOM_NEG_BG = "FCE4D6"
+
+# ── 英語列名マッピング ─────────────────────────────────────────
+_BASE_MAP: dict[str, str] = {
+    # Dimensions
+    "年月": "Month", "店舗": "Store", "IP名称": "IP",
+    "商品コード": "SKU Code", "商品名": "SKU Name",
+    "指標": "KPI",
+    # General KPIs
+    "全体購入金額合計（税込）": "Sales",
+    "TXN数":                  "TXNs",
+    "点数":                   "Qty",
+    "連帯率":                 "UPT",
+    "客単価":                 "ATV",
+    # Tax-free
+    "免税購入金額合計（税込）": "TF Sales",
+    "免税比率":               "TF %",
+    "免税TXN数":              "TF TXNs",
+    "免税数量":               "TF Qty",
+    "免税連帯率":              "TF UPT",
+    "免税客単価":              "TF ATV",
+    # Member
+    "会員金額（税込）":        "Mbr Sales",
+    "会員購入点数":            "Mbr Qty",
+    "会員人数":               "Active Mbr",
+    "会員客単価":             "Mbr ATV",
+    "会員連帯率":             "Mbr UPT",
+    "会員購入頻度":           "Frequency",
+    # Budget – monthly
+    "Month_Target":           "Month Target",
+    "Month_Target_Reach（％）": "Month Target Reach%",
+    "GAP（％）":               "GAP%",
+    # Budget – yearly
+    "Year_Target":             "Year Target",
+    "Year_JPY_YTD":            "Year YTD",
+    "Year_Time_Progress（％）": "Year Progress%",
+    "YEAR_TARGET_REACH（％）":  "Year Target Reach%",
+}
+_MOM_JP = "_先月比"
+_MOM_EN = "_MoM%"
+
+def _to_en(col: str) -> str:
+    if col in _BASE_MAP:
+        return _BASE_MAP[col]
+    if col.endswith(_MOM_JP):
+        base = col[:-len(_MOM_JP)]
+        if base in _BASE_MAP:
+            return _BASE_MAP[base] + _MOM_EN
+        return _to_en(base) + _MOM_EN
+    for jp, en in sorted(_BASE_MAP.items(), key=lambda x: -len(x[0])):
+        if col.endswith(f"_{jp}"):
+            return col[:-len(jp)-1] + f"_{en}"
+    return col
+
+def _rename_df(df: pd.DataFrame) -> pd.DataFrame:
+    return df.rename(columns={c: _to_en(c) for c in df.columns})
+
+_FLOAT_EN = {"UPT", "ATV", "TF UPT", "TF ATV", "Mbr ATV", "Mbr UPT", "Frequency"}
+
+def _is_float_col(col: str) -> bool:
+    if "[¥100M]" in col:
+        return True
+    if col in _FLOAT_EN:
+        return True
+    for fc in _FLOAT_EN:
+        if col.endswith(f"_{fc}"):
+            return True
+    return False
 # ─────────────────────────────────────────────────────────────
 
 # KPI の定義順（概要の縦並び・各シートの列順に使用）
@@ -303,19 +372,18 @@ def calc_kpi(df) -> dict:
 # ══════════════════════════════════════════════════════════════
 
 def build_overview(df_all, budget_data=None):
-    """Sheet1: YTD 全体 KPI（縦型）。金額 KPI は億円換算。
-    budget_data が指定された場合は下部に年間予算比 KPI 5行を追加する。
-    """
+    """Sheet1: YTD 全体 KPI（縦型）。金額 KPI は ¥100M 換算。"""
     kpi = calc_kpi(df_all)
     rows = []
     for key in KPI_ORDER:
         val = kpi[key]
+        en  = _BASE_MAP.get(key, key)
         if key in OKU_KPI:
-            rows.append({"指標": f"{key}[億円]", "YTD": round(val / OKU, 4)})
+            rows.append({"KPI": f"{en} [¥100M]", "YTD": round(val / OKU, 4)})
         else:
-            rows.append({"指標": key, "YTD": val})
+            rows.append({"KPI": en, "YTD": val})
 
-    # ── 年間予算比 KPI ─────────────────────────────────────────
+    # ── Year Budget KPI ────────────────────────────────────────
     if budget_data is not None:
         year_target   = get_year_budget(budget_data)
         year_progress = calc_year_progress(df_all)
@@ -328,12 +396,12 @@ def build_overview(df_all, budget_data=None):
             year_target = reach = gap = None
 
         rows += [
-            {"指標": "── 年間予算比 ───────────────", "YTD": None},
-            {"指標": "Year_Time_Progress（％）",     "YTD": year_progress},
-            {"指標": "Year_JPY_YTD",                "YTD": year_ytd},
-            {"指標": "Year_Target",                 "YTD": year_target},
-            {"指標": "YEAR_TARGET_REACH（％）",      "YTD": reach},
-            {"指標": "GAP（％）",                   "YTD": gap},
+            {"KPI": "── Year Budget ─────────────", "YTD": None},
+            {"KPI": "Year Progress%",              "YTD": year_progress},
+            {"KPI": "Year YTD",                    "YTD": year_ytd},
+            {"KPI": "Year Target",                 "YTD": year_target},
+            {"KPI": "Year Target Reach%",          "YTD": reach},
+            {"KPI": "GAP%",                        "YTD": gap},
         ]
 
     return pd.DataFrame(rows)
@@ -460,35 +528,133 @@ def build_by_product(df_all):
 
 
 # ══════════════════════════════════════════════════════════════
-#  スタイル & 出力
+#  Glossary シート
 # ══════════════════════════════════════════════════════════════
 
-def _cell_format(col_name: str) -> str:
-    """列名からセルの数値フォーマットを返す。
-      %   → "0.0%"
-      小数 → "#,##0.0"   （連帯率・客単価・億円など）
-      整数 → "#,##0"     （TXN数・点数・金額 raw など）
-    """
-    if any(k in col_name for k in ("比率",)) or "（％）" in col_name:
-        return "0.0%"
-    if any(k in col_name for k in FLOAT_KPI) or "億円" in col_name:
-        return "#,##0.0"
-    return "#,##0"
+_GLO_COLS = ["日本語指標", "英語翻訳 (Full)", "英語略称", "英語計算式 (Formula)", "日本語計算式"]
+
+def _sec(text):
+    return {"日本語指標": text, "英語翻訳 (Full)": "",
+            "英語略称": "", "英語計算式 (Formula)": "", "日本語計算式": ""}
+
+def _kpi(jp, full, en, formula, jp_formula):
+    return {"日本語指標": jp, "英語翻訳 (Full)": full, "英語略称": en,
+            "英語計算式 (Formula)": formula, "日本語計算式": jp_formula}
+
+def build_glossary():
+    rows = [
+        _sec("【基本指標】  売上を構成する要素を細かく分解したものです。"
+             "  全体売上 ＝ TXN数 × 客単価（連帯率 × 平均単価）"),
+        _kpi("全体購入金額合計", "Total Gross Sales",         "Sales",
+             "Σ(Tax-Incl. Amount)",      "全取引の税込販売金額の合計"),
+        _kpi("TXN数",           "Number of Transactions",    "TXNs",
+             "COUNTD(TXN_KEY)",          "取引件数（レジを通った回数）"),
+        _kpi("点数",            "Units Sold",                "Qty",
+             "Σ(Quantity)",              "販売済みの商品の総個数"),
+        _kpi("連帯率",          "Units Per Transaction",     "UPT",
+             "Qty ÷ TXNs",              "点数/TXN数（1回あたりの買上げ点数）"),
+        _kpi("客単価",          "Average Transaction Value", "ATV",
+             "Sales ÷ TXNs",            "金額/TXN数（1回あたりの買上げ金額）"),
+
+        _sec("【免税（Tax Free）指標】  インバウンド需要を測る重要な指標です。"),
+        _kpi("免税購入金額合計", "Total Tax-Free Sales",              "TF Sales",
+             "Σ(Amount | Tax = 0)",          "免税取引の税込販売金額の合計"),
+        _kpi("免税比率",        "Tax-Free Sales Ratio",              "TF %",
+             "TF Sales ÷ Sales",              "免税金額/全体金額×100%"),
+        _kpi("免税TXN数",       "Tax-Free Transactions",             "TF TXNs",
+             "COUNTD(TXN_KEY | Tax = 0)",    "免税取引の件数"),
+        _kpi("免税数量",        "Tax-Free Units Sold",               "TF Qty",
+             "Σ(Qty | Tax = 0)",             "免税で販売した商品の総個数"),
+        _kpi("免税連帯率",      "Tax-Free Units Per Transaction",    "TF UPT",
+             "TF Qty ÷ TF TXNs",             "免税数量/免税TXN数"),
+        _kpi("免税客単価",      "Average TF Transaction Value",      "TF ATV",
+             "TF Sales ÷ TF TXNs",           "免税金額/免税TXN数"),
+
+        _sec("【会員（CRM）指標】  リピーター戦略やファン化を測る指標です。"),
+        _kpi("会員金額",        "Total Member Sales",                "Mbr Sales",
+             "Σ(Amount | Member ID ≠ blank)",        "会員証が提示された取引の合計金額"),
+        _kpi("会員購入点数",    "Member Units Sold",                 "Mbr Qty",
+             "Σ(Qty | Member ID ≠ blank)",           "会員が購入した商品の総個数"),
+        _kpi("会員人数",        "Number of Unique Members",          "Active Mbr",
+             "COUNTD(Member ID | Member ID ≠ blank)", "期間中に購入のあったユニークな会員数"),
+        _kpi("会員客単価",      "Member Average Transaction Value",  "Mbr ATV",
+             "Mbr Sales ÷ Active Mbr",               "会員金額/会員人数"),
+        _kpi("会員連帯率",      "Member Units Per Transaction",      "Mbr UPT",
+             "Mbr Qty ÷ Active Mbr",                 "会員点数/会員TXN数"),
+        _kpi("会員購入頻度",    "Purchase Frequency",                "Frequency",
+             "Mbr TXNs ÷ Active Mbr",                "会員TXN数/会員人数（期間中の来店回数）"),
+    ]
+    return pd.DataFrame(rows, columns=_GLO_COLS)
 
 
-def style_sheet(ws, df):
-    h_font  = Font(bold=True, color=HEADER_FG, size=10)
+def _style_glossary(ws):
+    h_font  = Font(bold=True, color=HEADER_FG, size=10, name="Arial")
     h_fill  = PatternFill("solid", fgColor=HEADER_BG)
     h_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    s_font  = Font(bold=True, color=HEADER_FG, size=10, name="Arial")
+    s_fill  = PatternFill("solid", fgColor=HEADER_BG)
+    k_alt   = PatternFill("solid", fgColor="EBF3FB")
+    n_font  = Font(name="Arial", size=10)
+
     for cell in ws[1]:
         cell.font = h_font; cell.fill = h_fill; cell.alignment = h_align
 
-    # 数値フォーマット（列名で判定）
+    kpi_count = 0
+    for row in range(2, ws.max_row + 1):
+        is_section = str(ws.cell(row=row, column=3).value or "").strip() == ""
+        for col in range(1, 6):
+            cell = ws.cell(row=row, column=col)
+            if is_section:
+                cell.font      = s_font
+                cell.fill      = s_fill
+                cell.alignment = Alignment(horizontal="left", vertical="center",
+                                           wrap_text=True)
+            else:
+                cell.font = n_font
+                kpi_count += 1
+                if kpi_count % 2 == 0:
+                    cell.fill = k_alt
+                cell.alignment = Alignment(vertical="center", wrap_text=True)
+        if is_section:
+            ws.merge_cells(f"A{row}:E{row}")
+
+    ws.column_dimensions["A"].width = 18
+    ws.column_dimensions["B"].width = 34
+    ws.column_dimensions["C"].width = 14
+    ws.column_dimensions["D"].width = 36
+    ws.column_dimensions["E"].width = 36
+    ws.row_dimensions[1].height     = 20
+
+
+# ══════════════════════════════════════════════════════════════
+#  スタイル & 出力
+# ══════════════════════════════════════════════════════════════
+
+def style_sheet(ws, df):
+    h_font  = Font(bold=True, color=HEADER_FG, size=10, name="Arial")
+    h_fill  = PatternFill("solid", fgColor=HEADER_BG)
+    h_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    n_font  = Font(name="Arial", size=10)
+    for cell in ws[1]:
+        cell.font = h_font; cell.fill = h_fill; cell.alignment = h_align
+
+    # 数値フォーマット（英語列名で判定）
     for i, col in enumerate(df.columns, 1):
-        fmt    = _cell_format(col)
+        is_mom = "_MoM%" in col or col == "MoM%"
+        is_pct = not is_mom and "%" in col
+        is_flt = _is_float_col(col)
+        if is_mom:
+            fmt = "+0.00%;-0.00%;0.00%"
+        elif is_pct:
+            fmt = "0.00%"
+        elif is_flt:
+            fmt = "#,##0.0"
+        else:
+            fmt = "#,##0"
         letter = get_column_letter(i)
         for row in range(2, ws.max_row + 1):
             cell = ws[f"{letter}{row}"]
+            cell.font = n_font
             if cell.value is not None and isinstance(cell.value, (int, float)):
                 cell.number_format = fmt
 
@@ -502,25 +668,26 @@ def style_sheet(ws, df):
     ws.freeze_panes = "A2"
 
 
-_OVW_PCT_LABELS = {
-    "Year_Time_Progress（％）", "YEAR_TARGET_REACH（％）", "GAP（％）", "免税比率",
-}
-_OVW_INT_LABELS = {"Year_JPY_YTD", "Year_Target"}
+_OVW_FLOAT_LABELS = {"UPT", "ATV", "TF UPT", "TF ATV", "Mbr ATV", "Mbr UPT", "Frequency"}
+_OVW_PCT_LABELS   = {"Year Progress%", "Year Target Reach%", "GAP%", "TF %",
+                     "Month Target Reach%"}
+_OVW_INT_LABELS   = {"Year YTD", "Year Target", "Month Target"}
 
 def _style_overview(ws):
-    """概要シート専用: 指標ラベルを見てセル単位でフォーマット適用。"""
+    """Overview シート専用: KPI ラベルを見てセル単位でフォーマット + Arial 適用。"""
+    n_font = Font(name="Arial", size=10)
     for row in range(2, ws.max_row + 1):
         label = str(ws.cell(row=row, column=1).value or "")
         cell  = ws.cell(row=row, column=2)
+        cell.font = n_font
+        ws.cell(row=row, column=1).font = n_font
         if cell.value is None or not isinstance(cell.value, (int, float)):
             continue
-        if label in _OVW_PCT_LABELS or "（％）" in label:
-            cell.number_format = "0.0%"
-        elif "億円" in label:
+        if label in _OVW_PCT_LABELS or label.endswith("%"):
+            cell.number_format = "0.00%"
+        elif "[¥100M]" in label:
             cell.number_format = "#,##0.0"
-        elif label in _OVW_INT_LABELS:
-            cell.number_format = "#,##0"
-        elif any(k in label for k in FLOAT_KPI):
+        elif label in _OVW_FLOAT_LABELS:
             cell.number_format = "#,##0.0"
         else:
             cell.number_format = "#,##0"
@@ -530,11 +697,15 @@ def write_excel(output_path, sheets: dict):
     print(f"\n  書込中: {output_path}")
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         for name, df in sheets.items():
-            df.to_excel(writer, sheet_name=name[:31], index=False)
+            out_df = df if name == "Glossary" else _rename_df(df)
+            out_df.to_excel(writer, sheet_name=name[:31], index=False)
             ws = writer.sheets[name[:31]]
-            style_sheet(ws, df)
-            if name == "概要":
-                _style_overview(ws)
+            if name == "Glossary":
+                _style_glossary(ws)
+            else:
+                style_sheet(ws, out_df)
+                if name == "Overview":
+                    _style_overview(ws)
             print(f"    [{name}] {len(df):,} 行")
     print(f"\n  完成！→ {output_path}")
 
@@ -565,17 +736,20 @@ def main():
 
     print("  集計中...")
     sheets = {
-        "概要":  build_overview(df_all, budget_data),
-        "月別":  build_monthly(df_all, budget_data),
-        "店舗別": build_by_store(df_all, budget_data),
-        "商品別": build_by_product(df_all),
+        "Glossary": build_glossary(),
+        "Overview": build_overview(df_all, budget_data),
+        "Monthly":  build_monthly(df_all, budget_data),
+        "By Store": build_by_store(df_all, budget_data),
+        "By SKU":   build_by_product(df_all),
     }
     if df_ip_master is not None:
-        sheets = dict(list(sheets.items())[:3]) | \
-                 {"IP別": build_by_ip(df_all, df_ip_master)} | \
-                 {"商品別": sheets["商品別"]}
+        sheets = (
+            {k: v for k, v in list(sheets.items())[:4]}
+            | {"By IP": build_by_ip(df_all, df_ip_master)}
+            | {"By SKU": sheets["By SKU"]}
+        )
     else:
-        print("  ⚠ IP マスタなし → IP別シートをスキップ")
+        print("  ⚠ IP マスタなし → By IP シートをスキップ")
 
     write_excel(args.output, sheets)
 
