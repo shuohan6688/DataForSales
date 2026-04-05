@@ -73,14 +73,18 @@ KPI_ORDER = [
     "免税連帯率",
     "免税客単価",
     "会員金額（税込）",
+    "会員購入点数",        # ← 追加
     "会員人数",
     "会員客単価",
     "会員連帯率",
     "会員購入頻度",
 ]
 
-PCT_KPI  = {"免税比率"}                             # % フォーマット
-OKU_KPI  = {"全体購入金額合計（税込）",              # 億円換算（概要のみ）
+PCT_KPI  = {"免税比率"}
+# 小数点1桁表示（千切りあり）
+FLOAT_KPI = {"連帯率", "客単価", "免税連帯率", "免税客単価",
+             "会員客単価", "会員連帯率", "会員購入頻度"}
+OKU_KPI  = {"全体購入金額合計（税込）",
              "免税購入金額合計（税込）",
              "会員金額（税込）"}
 
@@ -231,6 +235,7 @@ def calc_kpi(df) -> dict:
         "免税連帯率":            round(ex_qty / ex_txn,  2) if ex_txn  else 0,
         "免税客単価":            round(ex_amt / ex_txn,  1) if ex_txn  else 0,
         "会員金額（税込）":       m_amt,
+        "会員購入点数":          m_qty,
         "会員人数":              m_count,
         "会員客単価":            round(m_amt  / m_count, 1) if m_count else 0,
         "会員連帯率":            round(m_qty  / m_count, 2) if m_count else 0,
@@ -305,6 +310,19 @@ def build_by_product(df_all):
 #  スタイル & 出力
 # ══════════════════════════════════════════════════════════════
 
+def _cell_format(col_name: str) -> str:
+    """列名からセルの数値フォーマットを返す。
+      %   → "0.0%"
+      小数 → "#,##0.0"   （連帯率・客単価・億円など）
+      整数 → "#,##0"     （TXN数・点数・金額 raw など）
+    """
+    if any(k in col_name for k in ("比率",)):
+        return "0.0%"
+    if any(k in col_name for k in FLOAT_KPI) or "億円" in col_name:
+        return "#,##0.0"
+    return "#,##0"
+
+
 def style_sheet(ws, df):
     h_font  = Font(bold=True, color=HEADER_FG, size=10)
     h_fill  = PatternFill("solid", fgColor=HEADER_BG)
@@ -312,13 +330,14 @@ def style_sheet(ws, df):
     for cell in ws[1]:
         cell.font = h_font; cell.fill = h_fill; cell.alignment = h_align
 
-    # % フォーマット列を特定
+    # 数値フォーマット（列名で判定）
     for i, col in enumerate(df.columns, 1):
+        fmt    = _cell_format(col)
         letter = get_column_letter(i)
-        is_pct = any(k in col for k in ("比率", "構成比", "占比"))
-        if is_pct:
-            for row in range(2, ws.max_row + 1):
-                ws[f"{letter}{row}"].number_format = "0.00%"
+        for row in range(2, ws.max_row + 1):
+            cell = ws[f"{letter}{row}"]
+            if cell.value is not None and isinstance(cell.value, (int, float)):
+                cell.number_format = fmt
 
     # 列幅
     for col_idx, col_cells in enumerate(
