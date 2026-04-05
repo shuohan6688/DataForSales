@@ -22,6 +22,8 @@ KPI:
 """
 
 import argparse
+import calendar
+import re
 import sys
 from pathlib import Path
 
@@ -180,6 +182,59 @@ def load_all(paths):
     return df_all
 
 
+def load_budget(budget_file):
+    """売上予算管理表（月別・店舗別）を読み込む。"""
+    if budget_file:
+        path = Path(budget_file)
+    else:
+        keywords = ["budget", "target", "予算", "目標"]
+        candidates = [p for p in sorted(Path(".").glob("*.xlsx"))
+                      if any(k in p.stem.lower() for k in keywords)]
+        if not candidates:
+            return None
+        path = candidates[0]
+
+    print(f"  Budget ファイル: {path.name}")
+    df = pd.read_excel(path, header=2, keep_default_na=False, engine="openpyxl")
+
+    store_col = df.columns[0]
+    df = df[~df[store_col].astype(str).str.contains("合計|total|grand", case=False, na=False)]
+    df = df[df[store_col].astype(str).str.strip().replace("nan", "") != ""]
+    df[store_col] = df[store_col].astype(str).str.strip()
+
+    month_cols = {}
+    for col in df.columns:
+        m = re.match(r"^(\d{1,2})月$", str(col).strip())
+        if m:
+            month_cols[int(m.group(1))] = col
+
+    print(f"    店舗数: {len(df)}  月別列: {sorted(month_cols.keys())}")
+    return {"store_col": store_col, "month_cols": month_cols, "df": df}
+
+
+def get_year_budget(budget_data):
+    """全月・全店舗の年間合計予算を返す。"""
+    if budget_data is None:
+        return None
+    total = sum(
+        pd.to_numeric(budget_data["df"][col], errors="coerce").fillna(0).sum()
+        for col in budget_data["month_cols"].values()
+    )
+    return float(total) if total > 0 else None
+
+
+def calc_year_progress(df_all):
+    """データの最終日 ÷ その年の総日数 = 年間進捗率。"""
+    valid  = df_all[df_all["__ym__"] != "日付不明"]
+    max_dt = valid[COL_PICKUP_TIME].max()
+    if pd.isna(max_dt):
+        return None
+    year       = max_dt.year
+    total_days = 366 if calendar.isleap(year) else 365
+    elapsed    = (max_dt - pd.Timestamp(year, 1, 1)).days + 1
+    return elapsed / total_days
+
+
 def load_ip_master(ip_file):
     if ip_file:
         path = Path(ip_file)
@@ -247,8 +302,10 @@ def calc_kpi(df) -> dict:
 #  Sheet ビルド
 # ══════════════════════════════════════════════════════════════
 
-def build_overview(df_all):
-    """Sheet1: YTD 全体 KPI（縦型）。金額 KPI は億円換算。"""
+def build_overview(df_all, budget_data=None):
+    """Sheet1: YTD 全体 KPI（縦型）。金額 KPI は億円換算。
+    budget_data が指定された場合は下部に年間予算比 KPI 5行を追加する。
+    """
     kpi = calc_kpi(df_all)
     rows = []
     for key in KPI_ORDER:
@@ -257,6 +314,29 @@ def build_overview(df_all):
             rows.append({"指標": f"{key}[億円]", "YTD": round(val / OKU, 4)})
         else:
             rows.append({"指標": key, "YTD": val})
+
+    # ── 年間予算比 KPI ─────────────────────────────────────────
+    if budget_data is not None:
+        year_target   = get_year_budget(budget_data)
+        year_progress = calc_year_progress(df_all)
+        year_ytd      = df_all[COL_AMOUNT].sum()
+
+        if year_target and year_target > 0:
+            gap   = year_ytd / year_target - 1
+            reach = (year_ytd / (year_target * year_progress)
+                     if year_progress else None)
+        else:
+            year_target = reach = gap = None
+
+        rows += [
+            {"指標": "── 年間予算比 ───────────────", "YTD": None},
+            {"指標": "Year_Time_Progress（％）",     "YTD": year_progress},
+            {"指標": "Year_JPY_YTD",                "YTD": year_ytd},
+            {"指標": "Year_Target",                 "YTD": year_target},
+            {"指標": "YEAR_TARGET_REACH（％）",      "YTD": reach},
+            {"指標": "GAP（％）",                   "YTD": gap},
+        ]
+
     return pd.DataFrame(rows)
 
 
@@ -349,12 +429,39 @@ def style_sheet(ws, df):
     ws.freeze_panes = "A2"
 
 
+_OVW_PCT_LABELS = {
+    "Year_Time_Progress（％）", "YEAR_TARGET_REACH（％）", "GAP（％）", "免税比率",
+}
+_OVW_INT_LABELS = {"Year_JPY_YTD", "Year_Target"}
+
+def _style_overview(ws):
+    """概要シート専用: 指標ラベルを見てセル単位でフォーマット適用。"""
+    for row in range(2, ws.max_row + 1):
+        label = str(ws.cell(row=row, column=1).value or "")
+        cell  = ws.cell(row=row, column=2)
+        if cell.value is None or not isinstance(cell.value, (int, float)):
+            continue
+        if label in _OVW_PCT_LABELS or "（％）" in label:
+            cell.number_format = "0.0%"
+        elif "億円" in label:
+            cell.number_format = "#,##0.0"
+        elif label in _OVW_INT_LABELS:
+            cell.number_format = "#,##0"
+        elif any(k in label for k in FLOAT_KPI):
+            cell.number_format = "#,##0.0"
+        else:
+            cell.number_format = "#,##0"
+
+
 def write_excel(output_path, sheets: dict):
     print(f"\n  書込中: {output_path}")
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         for name, df in sheets.items():
             df.to_excel(writer, sheet_name=name[:31], index=False)
-            style_sheet(writer.sheets[name[:31]], df)
+            ws = writer.sheets[name[:31]]
+            style_sheet(ws, df)
+            if name == "概要":
+                _style_overview(ws)
             print(f"    [{name}] {len(df):,} 行")
     print(f"\n  完成！→ {output_path}")
 
@@ -368,7 +475,8 @@ def main():
     parser.add_argument("files",     nargs="*", help="対象 xlsx（省略時は自動スキャン）")
     parser.add_argument("--dir",     default=None,           help="スキャンディレクトリ")
     parser.add_argument("--output",  default=DEFAULT_OUTPUT, help="出力ファイル名")
-    parser.add_argument("--ip-file", default=None,           help="SKU→IP マスタ")
+    parser.add_argument("--ip-file",     default=None, help="SKU→IP マスタ")
+    parser.add_argument("--budget-file", default=None, help="売上予算管理表 xlsx（省略時は自動検出）")
     args = parser.parse_args()
 
     print("=== YTD レポート生成ツール ===")
@@ -377,13 +485,14 @@ def main():
 
     df_all       = load_all(paths)
     df_ip_master = load_ip_master(args.ip_file)
+    budget_data  = load_budget(args.budget_file)
 
     valid_months = sorted(m for m in df_all["__ym__"].unique() if m != "日付不明")
     print(f"  集計期間: {valid_months[0]} ～ {valid_months[-1]}  ({len(valid_months)} ヶ月)")
 
     print("  集計中...")
     sheets = {
-        "概要":  build_overview(df_all),
+        "概要":  build_overview(df_all, budget_data),
         "月別":  build_monthly(df_all),
         "店舗別": build_by_store(df_all),
         "商品別": build_by_product(df_all),
