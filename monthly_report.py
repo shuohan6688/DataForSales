@@ -331,8 +331,8 @@ def build_overview(df_curr, df_prev, curr_ym, prev_ym, budget_data=None):
     return pd.DataFrame(rows)
 
 
-def build_monthly(df_all):
-    """Sheet2: 月別推移（年月 | 各指標 | 先月比 … 交互配置）。"""
+def build_monthly(df_all, budget_data=None):
+    """Sheet2: 月別推移（年月 | [予算列] | 各指標 | 先月比 … 交互配置）。"""
     months = sorted(m for m in df_all["__ym__"].unique() if m != "日付不明")
 
     rows = []
@@ -341,14 +341,32 @@ def build_monthly(df_all):
         df_ym  = df_all[df_all["__ym__"] == ym]
         curr_m = metrics_for(df_ym)
         row    = {"年月": ym}
+
+        # ── 予算比 KPI ──────────────────────────────────────────
+        if budget_data is not None:
+            month_target, _ = get_month_budget(budget_data, ym)
+            month_progress  = calc_month_progress(df_ym, ym)
+            month_mtd       = df_ym[COL_AMOUNT].sum()
+            if month_target and month_target > 0:
+                gap   = month_mtd / month_target - 1
+                reach = (month_mtd / (month_target * month_progress)
+                         if month_progress else None)
+            else:
+                month_target = reach = gap = None
+            row["Month_Target"]           = month_target
+            row["Month_Target_Reach（％）"] = reach
+            row["GAP（％）"]               = gap
+
         for key in METRIC_ORDER:
-            row[key]          = curr_m[key]
+            row[key]            = curr_m[key]
             row[f"{key}_先月比"] = mom(curr_m[key], prev_m.get(key))
         rows.append(row)
         prev_m = curr_m
 
-    # 列順: 年月, (指標, 先月比) × 7
+    # 列順: 年月, [予算3列], (指標, 先月比) × 7
     ordered = ["年月"]
+    if budget_data is not None:
+        ordered += ["Month_Target", "Month_Target_Reach（％）", "GAP（％）"]
     for key in METRIC_ORDER:
         ordered += [key, f"{key}_先月比"]
     df = pd.DataFrame(rows)
@@ -392,7 +410,7 @@ def _add_mom_cols(curr_df, df_prev, group_keys, mom_targets):
     return merged.drop(columns=[c for c in merged.columns if c.endswith("_前月")])
 
 
-def build_by_store(df_curr, df_prev):
+def build_by_store(df_curr, df_prev, budget_data=None, curr_ym=None):
     """Sheet3: 店舗別。"""
     t_amt = df_curr[COL_AMOUNT].sum()
     t_txn = df_curr[COL_TXN].nunique()
@@ -401,12 +419,36 @@ def build_by_store(df_curr, df_prev):
     df["金額構成比"] = df["購入金額合計（税込）"] / t_amt if t_amt else 0
     df["TXN構成比"]  = df["トランザクション数"]  / t_txn if t_txn else 0
 
+    # ── 店舗別予算比 KPI ─────────────────────────────────────
+    has_budget = budget_data is not None and curr_ym is not None
+    if has_budget:
+        _, store_budgets  = get_month_budget(budget_data, curr_ym)
+        month_progress    = calc_month_progress(df_curr, curr_ym)
+        targets, reaches, gaps = [], [], []
+        for store in df[COL_STORE]:
+            target = store_budgets.get(str(store))
+            mtd    = float(df.loc[df[COL_STORE] == store,
+                                  "購入金額合計（税込）"].values[0])
+            if target and target > 0:
+                gap   = mtd / target - 1
+                reach = mtd / (target * month_progress) if month_progress else None
+            else:
+                target = reach = gap = None
+            targets.append(target)
+            reaches.append(reach)
+            gaps.append(gap)
+        df["Month_Target"]           = targets
+        df["Month_Target_Reach（％）"] = reaches
+        df["GAP（％）"]               = gaps
+
     df = _add_mom_cols(df, df_prev, [COL_STORE],
                        ["購入金額合計（税込）", "トランザクション数",
                         "購入点数", "免税購入金額合計（税込）"])
 
-    col_order = [
-        COL_STORE,
+    col_order = [COL_STORE]
+    if has_budget:
+        col_order += ["Month_Target", "Month_Target_Reach（％）", "GAP（％）"]
+    col_order += [
         "購入金額合計（税込）", "金額構成比", "購入金額合計（税込）_先月比",
         "トランザクション数",  "TXN構成比",  "トランザクション数_先月比",
         "購入点数", "連帯率", "客単価",
@@ -674,11 +716,12 @@ def style_sheet(ws, df):
         cell.font = h_font; cell.fill = h_fill; cell.alignment = h_align
 
     letters = _col_letters(df)
-    pct_keywords = ("比率", "構成比", "占比", "先月比")
+    pct_keywords = ("比率", "構成比", "占比", "先月比", "（％）")
 
     for col, letter in letters.items():
-        is_pct   = any(k in col for k in pct_keywords)
-        is_mom   = "先月比" in col
+        is_pct    = any(k in col for k in pct_keywords)
+        is_mom    = "先月比" in col
+        is_target = "Target" in col and "（％）" not in col
 
         for row in range(2, ws.max_row + 1):
             cell = ws[f"{letter}{row}"]
@@ -693,6 +736,8 @@ def style_sheet(ws, df):
                     )
             elif is_pct:
                 cell.number_format = "0.00%"
+            elif is_target:
+                cell.number_format = "#,##0"
 
     # 列幅（先頭 200 行でサンプリング）
     for col_idx, col_cells in enumerate(
@@ -780,8 +825,8 @@ def main():
     print("  集計中...")
     sheets = {
         "概要":  build_overview(df_curr, df_prev, curr_ym, prev_ym, budget_data),
-        "月別":  build_monthly(df_all),
-        "店舗別": build_by_store(df_curr, df_prev),
+        "月別":  build_monthly(df_all, budget_data),
+        "店舗別": build_by_store(df_curr, df_prev, budget_data, curr_ym),
         "商品別": build_by_product(df_curr, df_prev),
     }
     if df_ip_master is not None:
