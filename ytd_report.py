@@ -797,11 +797,15 @@ def main():
         "By SKU":       build_by_product(df_all),
     }
     if df_ip_master is not None:
-        sheets = (
-            {k: v for k, v in list(sheets.items())[:4]}
-            | {"By IP": build_by_ip(df_all, df_ip_master)}
-            | {"By SKU": sheets["By SKU"]}
-        )
+        sheets = {
+            "Glossary":      sheets["Glossary"],
+            "Overview":      sheets["Overview"],
+            "Monthly":       sheets["Monthly"],
+            "By Store":      sheets["By Store"],
+            "Store Monthly": sheets["Store Monthly"],
+            "By IP":         build_by_ip(df_all, df_ip_master),
+            "By SKU":        sheets["By SKU"],
+        }
     else:
         print("  ⚠ IP マスタなし → By IP シートをスキップ")
 
