@@ -88,6 +88,10 @@ _BASE_MAP: dict[str, str] = {
     "会員客単価":             "Mbr ATV",
     "会員連帯率":             "Mbr UPT",
     "会員購入頻度":           "Frequency",
+    # Member – store×month sheet
+    "会員TXN数":              "Mbr TXNs",
+    "会員購入金額Mix％":       "Mbr Sales Mix%",
+    "会員人数Mix％":           "Mbr Count Mix%",
     # Budget – monthly
     "Month_Target":           "Month Target",
     "Month_Target_Reach（％）": "Month Target Reach%",
@@ -513,6 +517,55 @@ def build_by_store(df_all, budget_data=None):
     return df
 
 
+def build_store_monthly(df_all):
+    """店舗×月別 KPI シート。
+    列: 店舗 | 年月 | 全体売上金額 | TXN数 | 会員購入金額 | 会員TXN数 |
+        会員人数 | 会員購入金額Mix％ | 会員人数Mix％ | 客単価 | 会員客単価 |
+        連帯率 | 会員連帯率
+    会員人数Mix％ = 会員人数 ÷ TXN数（全体）
+    """
+    months = sorted(m for m in df_all["__ym__"].unique() if m != "日付不明")
+    stores = sorted(df_all[COL_STORE].dropna().unique())
+
+    rows = []
+    for store in stores:
+        df_s = df_all[df_all[COL_STORE] == store]
+        for ym in months:
+            df_sm = df_s[df_s["__ym__"] == ym]
+            if df_sm.empty:
+                continue
+
+            # ── 全体 ─────────────────────────────────────────
+            txn = df_sm[COL_TXN].nunique()
+            qty = df_sm[COL_QTY].sum()
+            amt = df_sm[COL_AMOUNT].sum()
+
+            # ── 会員 ─────────────────────────────────────────
+            df_m    = df_sm[df_sm[COL_MEMBER].astype(str).str.strip() != ""]
+            m_count = df_m[COL_MEMBER].nunique()
+            m_txn   = df_m[COL_TXN].nunique()
+            m_qty   = df_m[COL_QTY].sum()
+            m_amt   = df_m[COL_AMOUNT].sum()
+
+            rows.append({
+                COL_STORE:          store,
+                "年月":              ym,
+                "全体購入金額合計（税込）": amt,
+                "TXN数":             txn,
+                "会員金額（税込）":    m_amt,
+                "会員TXN数":          m_txn,
+                "会員人数":           m_count,
+                "会員購入金額Mix％":   m_amt / amt     if amt     else 0,
+                "会員人数Mix％":       m_count / txn   if txn     else 0,
+                "客単価":             round(amt / txn,     1) if txn     else 0,
+                "会員客単価":         round(m_amt / m_count, 1) if m_count else 0,
+                "連帯率":             round(qty / txn,     2) if txn     else 0,
+                "会員連帯率":         round(m_qty / m_count, 2) if m_count else 0,
+            })
+
+    return pd.DataFrame(rows)
+
+
 def build_by_ip(df_all, df_ip_master):
     """Sheet4: IP別 YTD KPI。"""
     df = df_all.copy()
@@ -736,11 +789,12 @@ def main():
 
     print("  集計中...")
     sheets = {
-        "Glossary": build_glossary(),
-        "Overview": build_overview(df_all, budget_data),
-        "Monthly":  build_monthly(df_all, budget_data),
-        "By Store": build_by_store(df_all, budget_data),
-        "By SKU":   build_by_product(df_all),
+        "Glossary":     build_glossary(),
+        "Overview":     build_overview(df_all, budget_data),
+        "Monthly":      build_monthly(df_all, budget_data),
+        "By Store":     build_by_store(df_all, budget_data),
+        "Store Monthly": build_store_monthly(df_all),
+        "By SKU":       build_by_product(df_all),
     }
     if df_ip_master is not None:
         sheets = (
