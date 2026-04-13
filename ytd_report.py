@@ -92,6 +92,9 @@ _BASE_MAP: dict[str, str] = {
     "会員TXN数":              "Mbr TXNs",
     "会員購入金額Mix％":       "Mbr Sales Mix%",
     "会員人数Mix％":           "Mbr Count Mix%",
+    # Mix% – store×dim sheets
+    "売上構成比":              "Sales Mix%",
+    "免税売上構成比":          "TF Sales Mix%",
     # Budget – monthly
     "Month_Target":           "Month Target",
     "Month_Target_Reach（％）": "Month Target Reach%",
@@ -133,6 +136,16 @@ def _is_float_col(col: str) -> bool:
             return True
     return False
 # ─────────────────────────────────────────────────────────────
+
+def mom(curr, prev):
+    """先月比 (curr - prev) / |prev|。prev が 0 / None の場合は None。"""
+    try:
+        if prev is not None and prev != 0:
+            return (curr - prev) / abs(prev)
+    except Exception:
+        pass
+    return None
+
 
 # KPI の定義順（概要の縦並び・各シートの列順に使用）
 KPI_ORDER = [
@@ -459,6 +472,45 @@ def _budget_kpis(ytd_amt, target):
     return None, None
 
 
+def _append_total_row(df, group_keys, df_raw):
+    """全行合計の TOTAL 行を DataFrame 末尾に追加する。
+    ・最初の group_key → "TOTAL"、それ以外の group_key → ""
+    ・KPI 列 → calc_kpi(df_raw) の値
+    ・MoM% / 予算列など → None（空白）
+    ・Mix% 列（売上構成比 / 免税売上構成比）→ 1.0（全体＝100%）
+    """
+    kpis = calc_kpi(df_raw)
+
+    # calc_kpi に含まれない追加指標
+    df_m      = df_raw[df_raw[COL_MEMBER].astype(str).str.strip() != ""]
+    total_amt = kpis["全体購入金額合計（税込）"]
+    total_txn = kpis["TXN数"]
+    m_amt     = df_m[COL_AMOUNT].sum()
+    m_count   = kpis["会員人数"]
+    extra = {
+        "会員TXN数":          df_m[COL_TXN].nunique(),
+        "会員購入金額Mix％":   m_amt / total_amt if total_amt else 0,
+        "会員人数Mix％":       m_count / total_txn if total_txn else 0,
+        "売上構成比":          1.0,
+        "免税売上構成比":      1.0,
+    }
+
+    total = {}
+    for col in df.columns:
+        if col == group_keys[0]:
+            total[col] = "TOTAL"
+        elif col in group_keys:
+            total[col] = ""
+        elif col in kpis:
+            total[col] = kpis[col]
+        elif col in extra:
+            total[col] = extra[col]
+        else:
+            total[col] = None   # MoM%、予算目標など
+
+    return pd.concat([df, pd.DataFrame([total])], ignore_index=True)
+
+
 def build_monthly(df_all, budget_data=None):
     """Sheet2: 月別 KPI（年月 | [予算列] | KPI列…）。"""
     months = sorted(m for m in df_all["__ym__"].unique() if m != "日付不明")
@@ -498,7 +550,7 @@ def _build_by_dim(df_all, group_keys):
 
 
 def build_by_store(df_all, budget_data=None):
-    """Sheet3: 店舗別 YTD KPI。"""
+    """Sheet3: 店舗別 YTD KPI（末尾に TOTAL 行）。"""
     df = _build_by_dim(df_all, [COL_STORE])
 
     if budget_data is not None:
@@ -514,7 +566,7 @@ def build_by_store(df_all, budget_data=None):
         df.insert(2, "YEAR_TARGET_REACH（％）", reaches)
         df.insert(3, "GAP（％）",              gaps)
 
-    return df
+    return _append_total_row(df, [COL_STORE], df_all)
 
 
 def build_store_monthly(df_all):
@@ -563,21 +615,106 @@ def build_store_monthly(df_all):
                 "会員連帯率":         round(m_qty / m_count, 2) if m_count else 0,
             })
 
-    return pd.DataFrame(rows)
+    return _append_total_row(pd.DataFrame(rows), [COL_STORE, "年月"], df_all)
 
 
 def build_by_ip(df_all, df_ip_master):
-    """Sheet4: IP別 YTD KPI。"""
+    """Sheet4: IP別 YTD KPI（末尾に TOTAL 行）。"""
     df = df_all.copy()
     df[COL_PROD_CODE] = df[COL_PROD_CODE].astype(str).str.strip()
     df = df.merge(df_ip_master[[COL_PROD_CODE, COL_IP]], on=COL_PROD_CODE, how="left")
     df[COL_IP] = df[COL_IP].fillna("IP未設定")
-    return _build_by_dim(df, [COL_IP])
+    df_ip = df  # IP付き全データ（total row 計算用）
+    result = _build_by_dim(df, [COL_IP])
+    return _append_total_row(result, [COL_IP], df_ip)
 
 
 def build_by_product(df_all):
-    """Sheet5: 商品別 YTD KPI。"""
-    return _build_by_dim(df_all, [COL_PROD_CODE, COL_PRODUCT])
+    """Sheet5: 商品別 YTD KPI（末尾に TOTAL 行）。"""
+    result = _build_by_dim(df_all, [COL_PROD_CODE, COL_PRODUCT])
+    return _append_total_row(result, [COL_PROD_CODE, COL_PRODUCT], df_all)
+
+
+# ══════════════════════════════════════════════════════════════
+#  店舗×IP / 店舗×SKU クロス集計
+# ══════════════════════════════════════════════════════════════
+
+def _calc_store_dim_kpi(df_all, group_keys):
+    """店舗×ディメンション（IP/SKU）の YTD 集計＋直近 2 か月の MoM%。
+
+    列: group_keys | Sales | Sales_Mix% | Qty | TXNs
+          | TF_Sales | TF_Sales_Mix% | TF_Qty | TF_TXNs
+          | Sales_MoM% | Sales_Mix%_MoM% | Qty_MoM% | TXNs_MoM%
+          | TF_Sales_MoM% | TF_Qty_MoM% | TF_TXNs_MoM%
+    """
+    months = sorted(m for m in df_all["__ym__"].unique() if m != "日付不明")
+
+    def _agg(df):
+        grp    = df.groupby(group_keys, sort=False)
+        ex_grp = df[df["__exempt__"]].groupby(group_keys, sort=False)
+        res = pd.DataFrame({
+            "全体購入金額合計（税込）": grp[COL_AMOUNT].sum(),
+            "TXN数":                  grp[COL_TXN].nunique(),
+            "点数":                   grp[COL_QTY].sum(),
+            "免税購入金額合計（税込）": ex_grp[COL_AMOUNT].sum(),
+            "免税TXN数":              ex_grp[COL_TXN].nunique(),
+            "免税数量":               ex_grp[COL_QTY].sum(),
+        }).reset_index().fillna(0)
+        t_s  = res["全体購入金額合計（税込）"].sum()
+        t_tf = res["免税購入金額合計（税込）"].sum()
+        res["売上構成比"]   = res["全体購入金額合計（税込）"] / t_s  if t_s  else 0.0
+        res["免税売上構成比"] = res["免税購入金額合計（税込）"] / t_tf if t_tf else 0.0
+        return res
+
+    ytd = _agg(df_all)
+
+    # MoM%: 直近月 vs その前の月
+    if len(months) >= 2:
+        curr_df = _agg(df_all[df_all["__ym__"] == months[-1]])
+        prev_df = _agg(df_all[df_all["__ym__"] == months[-2]])
+
+        mom_cols = [
+            "全体購入金額合計（税込）", "売上構成比",
+            "点数", "TXN数",
+            "免税購入金額合計（税込）", "免税数量", "免税TXN数",
+        ]
+        merged = curr_df.merge(
+            prev_df[group_keys + mom_cols],
+            on=group_keys, how="left", suffixes=("", "_p")
+        )
+        for col in mom_cols:
+            merged[f"{col}_先月比"] = merged.apply(
+                lambda r, c=col, p=f"{col}_p": mom(r[c], r.get(p)), axis=1
+            )
+        mom_result = merged[group_keys + [f"{c}_先月比" for c in mom_cols]]
+        ytd = ytd.merge(mom_result, on=group_keys, how="left")
+
+    col_order = group_keys + [
+        "全体購入金額合計（税込）", "売上構成比", "点数", "TXN数",
+        "免税購入金額合計（税込）", "免税売上構成比", "免税数量", "免税TXN数",
+        "全体購入金額合計（税込）_先月比", "売上構成比_先月比",
+        "点数_先月比", "TXN数_先月比",
+        "免税購入金額合計（税込）_先月比", "免税数量_先月比", "免税TXN数_先月比",
+    ]
+    return ytd[[c for c in col_order if c in ytd.columns]].sort_values(
+        "全体購入金額合計（税込）", ascending=False
+    ).reset_index(drop=True)
+
+
+def build_by_store_ip(df_all, df_ip_master):
+    """店舗×IP クロス集計（店舗列にオートフィルター）。"""
+    df = df_all.copy()
+    df[COL_PROD_CODE] = df[COL_PROD_CODE].astype(str).str.strip()
+    df = df.merge(df_ip_master[[COL_PROD_CODE, COL_IP]], on=COL_PROD_CODE, how="left")
+    df[COL_IP] = df[COL_IP].fillna("IP未設定")
+    result = _calc_store_dim_kpi(df, [COL_STORE, COL_IP])
+    return _append_total_row(result, [COL_STORE, COL_IP], df)
+
+
+def build_by_store_sku(df_all):
+    """店舗×SKU クロス集計（店舗列にオートフィルター）。"""
+    result = _calc_store_dim_kpi(df_all, [COL_STORE, COL_PROD_CODE, COL_PRODUCT])
+    return _append_total_row(result, [COL_STORE, COL_PROD_CODE, COL_PRODUCT], df_all)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -683,7 +820,7 @@ def _style_glossary(ws):
 #  スタイル & 出力
 # ══════════════════════════════════════════════════════════════
 
-def style_sheet(ws, df):
+def style_sheet(ws, df, auto_filter=False):
     h_font  = Font(bold=True, color=HEADER_FG, size=10, name="Arial")
     h_fill  = PatternFill("solid", fgColor=HEADER_BG)
     h_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -711,6 +848,16 @@ def style_sheet(ws, df):
             if cell.value is not None and isinstance(cell.value, (int, float)):
                 cell.number_format = fmt
 
+    # TOTAL 行ハイライト（末尾行の第1セルが "TOTAL" の場合）
+    last_row = ws.max_row
+    if str(ws.cell(row=last_row, column=1).value or "").upper() == "TOTAL":
+        total_fill = PatternFill("solid", fgColor="D9D9D9")
+        total_font = Font(name="Arial", size=10, bold=True)
+        for col in range(1, ws.max_column + 1):
+            cell = ws.cell(row=last_row, column=col)
+            cell.fill = total_fill
+            cell.font = total_font
+
     # 列幅
     for col_idx, col_cells in enumerate(
         ws.iter_cols(min_row=1, max_row=min(200, ws.max_row)), 1
@@ -719,6 +866,8 @@ def style_sheet(ws, df):
         ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 2, 40)
 
     ws.freeze_panes = "A2"
+    if auto_filter:
+        ws.auto_filter.ref = ws.dimensions
 
 
 _OVW_FLOAT_LABELS = {"UPT", "ATV", "TF UPT", "TF ATV", "Mbr ATV", "Mbr UPT", "Frequency"}
@@ -747,6 +896,9 @@ def _style_overview(ws):
 
 
 def write_excel(output_path, sheets: dict):
+    # オートフィルターを有効にするシート名（店舗列で絞り込みしたいシート）
+    AUTO_FILTER_SHEETS = {"By Store", "Monthly", "Store Monthly",
+                          "By IP", "By SKU", "Store×IP", "Store×SKU"}
     print(f"\n  書込中: {output_path}")
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         for name, df in sheets.items():
@@ -756,7 +908,7 @@ def write_excel(output_path, sheets: dict):
             if name == "Glossary":
                 _style_glossary(ws)
             else:
-                style_sheet(ws, out_df)
+                style_sheet(ws, out_df, auto_filter=(name in AUTO_FILTER_SHEETS))
                 if name == "Overview":
                     _style_overview(ws)
             print(f"    [{name}] {len(df):,} 行")
@@ -789,12 +941,13 @@ def main():
 
     print("  集計中...")
     sheets = {
-        "Glossary":     build_glossary(),
-        "Overview":     build_overview(df_all, budget_data),
-        "Monthly":      build_monthly(df_all, budget_data),
-        "By Store":     build_by_store(df_all, budget_data),
+        "Glossary":      build_glossary(),
+        "Overview":      build_overview(df_all, budget_data),
+        "Monthly":       build_monthly(df_all, budget_data),
+        "By Store":      build_by_store(df_all, budget_data),
         "Store Monthly": build_store_monthly(df_all),
-        "By SKU":       build_by_product(df_all),
+        "By SKU":        build_by_product(df_all),
+        "Store×SKU":     build_by_store_sku(df_all),
     }
     if df_ip_master is not None:
         sheets = {
@@ -805,9 +958,11 @@ def main():
             "Store Monthly": sheets["Store Monthly"],
             "By IP":         build_by_ip(df_all, df_ip_master),
             "By SKU":        sheets["By SKU"],
+            "Store×IP":      build_by_store_ip(df_all, df_ip_master),
+            "Store×SKU":     sheets["Store×SKU"],
         }
     else:
-        print("  ⚠ IP マスタなし → By IP シートをスキップ")
+        print("  ⚠ IP マスタなし → By IP / Store×IP シートをスキップ")
 
     write_excel(args.output, sheets)
 
