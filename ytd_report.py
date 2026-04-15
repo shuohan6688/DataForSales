@@ -166,8 +166,9 @@ KPI_ORDER = [
     "免税連帯率",
     "免税客単価",
     "会員金額（税込）",
-    "会員購入点数",        # ← 追加
+    "会員購入点数",
     "会員人数",
+    "会員TXN数",       # ← Active Mbr の直後に追加
     "会員客単価",
     "会員連帯率",
     "会員購入頻度",
@@ -383,6 +384,7 @@ def calc_kpi(df) -> dict:
         "会員金額（税込）":       m_amt,
         "会員購入点数":          m_qty,
         "会員人数":              m_count,
+        "会員TXN数":             m_txn,
         "会員客単価":            round(m_amt  / m_count, 1) if m_count else 0,
         "会員連帯率":            round(m_qty  / m_count, 2) if m_count else 0,
         "会員購入頻度":          round(m_txn  / m_count, 2) if m_count else 0,
@@ -486,14 +488,13 @@ def _append_total_row(df, group_keys, df_raw):
     """
     kpis = calc_kpi(df_raw)
 
-    # calc_kpi に含まれない追加指標
+    # calc_kpi に含まれない追加指標（会員TXN数は calc_kpi に移動済み）
     df_m      = df_raw[df_raw[COL_MEMBER].astype(str).str.strip() != ""]
     total_amt = kpis["全体購入金額合計（税込）"]
     total_txn = kpis["TXN数"]
     m_amt     = df_m[COL_AMOUNT].sum()
     m_count   = kpis["会員人数"]
     extra = {
-        "会員TXN数":          df_m[COL_TXN].nunique(),
         "会員購入金額Mix％":   m_amt / total_amt if total_amt else 0,
         "会員人数Mix％":       m_count / total_txn if total_txn else 0,
         "売上構成比":          1.0,
