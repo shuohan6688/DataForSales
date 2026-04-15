@@ -98,6 +98,7 @@ _BASE_MAP: dict[str, str] = {
     # IP×月別シート
     "売上金額":                "Sales",
     "SKU数":                  "SKU Count",
+    "単品効率":                "SKU Efficiency",
     # Budget – monthly
     "Month_Target":           "Month Target",
     "Month_Target_Reach（％）": "Month Target Reach%",
@@ -127,7 +128,8 @@ def _to_en(col: str) -> str:
 def _rename_df(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns={c: _to_en(c) for c in df.columns})
 
-_FLOAT_EN = {"UPT", "ATV", "TF UPT", "TF ATV", "Mbr ATV", "Mbr UPT", "Frequency"}
+_FLOAT_EN = {"UPT", "ATV", "TF UPT", "TF ATV", "Mbr ATV", "Mbr UPT", "Frequency",
+             "SKU Efficiency"}
 
 def _is_float_col(col: str) -> bool:
     if "[¥100M]" in col:
@@ -721,8 +723,15 @@ def build_by_store_sku(df_all):
 
 
 def build_ip_monthly(df_all, df_ip_master):
-    """IP×月別シート: IP名称 | 年月 | 売上金額 | SKU数（ユニーク商品コード数）。
-    末尾に TOTAL 行付き。
+    """IP×月別シート。
+    列: IP | 年月 | 売上金額 | SKU数 | 単品効率（= 売上金額 ÷ SKU数）
+
+    構造:
+      IP-A  2025-01  …
+      IP-A  2025-02  …
+      IP-A  Sub-Total  ← IP 合計（SKU数 = 全期間ユニーク数）
+      IP-B  …
+      TOTAL            ← 全体合計
     """
     df = df_all.copy()
     df[COL_PROD_CODE] = df[COL_PROD_CODE].astype(str).str.strip()
@@ -730,35 +739,41 @@ def build_ip_monthly(df_all, df_ip_master):
     df[COL_IP] = df[COL_IP].fillna("IP未設定")
 
     months   = sorted(m for m in df["__ym__"].unique() if m != "日付不明")
-    # IP を YTD 売上降順で並べる
-    ip_sales = (df.groupby(COL_IP)[COL_AMOUNT].sum()
+    ip_order = (df.groupby(COL_IP)[COL_AMOUNT].sum()
                   .sort_values(ascending=False).index.tolist())
 
+    def _eff(sales, sku_n):
+        return round(sales / sku_n, 1) if sku_n else 0
+
     rows = []
-    for ip in ip_sales:
+    for ip in ip_order:
         df_ip = df[df[COL_IP] == ip]
+
+        # 月別行
         for ym in months:
             df_im = df_ip[df_ip["__ym__"] == ym]
             if df_im.empty:
                 continue
-            rows.append({
-                COL_IP:   ip,
-                "年月":    ym,
-                "売上金額": df_im[COL_AMOUNT].sum(),
-                "SKU数":   df_im[COL_PROD_CODE].nunique(),
-            })
+            s = df_im[COL_AMOUNT].sum()
+            k = df_im[COL_PROD_CODE].nunique()
+            rows.append({COL_IP: ip, "年月": ym,
+                         "売上金額": s, "SKU数": k, "単品効率": _eff(s, k)})
+
+        # IP 小計行（SKU数 = 全期間ユニーク数）
+        ip_s = df_ip[COL_AMOUNT].sum()
+        ip_k = df_ip[COL_PROD_CODE].nunique()
+        rows.append({COL_IP: ip, "年月": "Sub-Total",
+                     "売上金額": ip_s, "SKU数": ip_k, "単品効率": _eff(ip_s, ip_k)})
 
     result = pd.DataFrame(rows)
     if result.empty:
         return result
 
-    # TOTAL 行
-    total = {
-        COL_IP:   "TOTAL",
-        "年月":    "",
-        "売上金額": df[COL_AMOUNT].sum(),
-        "SKU数":   df[COL_PROD_CODE].nunique(),
-    }
+    # グランド TOTAL 行
+    t_s = df[COL_AMOUNT].sum()
+    t_k = df[COL_PROD_CODE].nunique()
+    total = {COL_IP: "TOTAL", "年月": "",
+             "売上金額": t_s, "SKU数": t_k, "単品効率": _eff(t_s, t_k)}
     return pd.concat([result, pd.DataFrame([total])], ignore_index=True)
 
 
