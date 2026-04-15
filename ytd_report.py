@@ -95,6 +95,9 @@ _BASE_MAP: dict[str, str] = {
     # Mix% – store×dim sheets
     "売上構成比":              "Sales Mix%",
     "免税売上構成比":          "TF Sales Mix%",
+    # IP×月別シート
+    "売上金額":                "Sales",
+    "SKU数":                  "SKU Count",
     # Budget – monthly
     "Month_Target":           "Month Target",
     "Month_Target_Reach（％）": "Month Target Reach%",
@@ -717,6 +720,48 @@ def build_by_store_sku(df_all):
     return _append_total_row(result, [COL_STORE, COL_PROD_CODE, COL_PRODUCT], df_all)
 
 
+def build_ip_monthly(df_all, df_ip_master):
+    """IP×月別シート: IP名称 | 年月 | 売上金額 | SKU数（ユニーク商品コード数）。
+    末尾に TOTAL 行付き。
+    """
+    df = df_all.copy()
+    df[COL_PROD_CODE] = df[COL_PROD_CODE].astype(str).str.strip()
+    df = df.merge(df_ip_master[[COL_PROD_CODE, COL_IP]], on=COL_PROD_CODE, how="left")
+    df[COL_IP] = df[COL_IP].fillna("IP未設定")
+
+    months   = sorted(m for m in df["__ym__"].unique() if m != "日付不明")
+    # IP を YTD 売上降順で並べる
+    ip_sales = (df.groupby(COL_IP)[COL_AMOUNT].sum()
+                  .sort_values(ascending=False).index.tolist())
+
+    rows = []
+    for ip in ip_sales:
+        df_ip = df[df[COL_IP] == ip]
+        for ym in months:
+            df_im = df_ip[df_ip["__ym__"] == ym]
+            if df_im.empty:
+                continue
+            rows.append({
+                COL_IP:   ip,
+                "年月":    ym,
+                "売上金額": df_im[COL_AMOUNT].sum(),
+                "SKU数":   df_im[COL_PROD_CODE].nunique(),
+            })
+
+    result = pd.DataFrame(rows)
+    if result.empty:
+        return result
+
+    # TOTAL 行
+    total = {
+        COL_IP:   "TOTAL",
+        "年月":    "",
+        "売上金額": df[COL_AMOUNT].sum(),
+        "SKU数":   df[COL_PROD_CODE].nunique(),
+    }
+    return pd.concat([result, pd.DataFrame([total])], ignore_index=True)
+
+
 # ══════════════════════════════════════════════════════════════
 #  Glossary シート
 # ══════════════════════════════════════════════════════════════
@@ -957,12 +1002,13 @@ def main():
             "By Store":      sheets["By Store"],
             "Store Monthly": sheets["Store Monthly"],
             "By IP":         build_by_ip(df_all, df_ip_master),
+            "IP Monthly":    build_ip_monthly(df_all, df_ip_master),
             "By SKU":        sheets["By SKU"],
             "Store×IP":      build_by_store_ip(df_all, df_ip_master),
             "Store×SKU":     sheets["Store×SKU"],
         }
     else:
-        print("  ⚠ IP マスタなし → By IP / Store×IP シートをスキップ")
+        print("  ⚠ IP マスタなし → By IP / IP Monthly / Store×IP シートをスキップ")
 
     write_excel(args.output, sheets)
 
